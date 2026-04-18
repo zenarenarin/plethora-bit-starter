@@ -193,7 +193,8 @@ async function cmdUpload(args) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || JSON.stringify(data));
-    console.log(`✓ Draft uploaded! bit id: ${data.bit.id}`);
+    const verb = data.action === 'updated' ? 'Draft updated' : 'Draft uploaded';
+    console.log(`✓ ${verb}! bit id: ${data.bit.id}`);
     console.log('  Open Plethora → Your Profile → Uploads to preview it.');
   } catch (e) {
     console.error('Upload failed:', e.message);
