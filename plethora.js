@@ -182,18 +182,18 @@ async function cmdUpload(args) {
 
   console.log(`Uploading "${metaTitle}" as draft…`);
 
-  const row = {
-    title:       metaTitle,
-    description: metaDesc,
-    tags:        metaTags,
-    source,
-    author_id:   cfg.user_id,
-    published:   false,
-  };
-
   try {
-    const bit = await sbInsert('bits', row, cfg.access_token);
-    console.log(`✓ Draft uploaded! bit id: ${bit.id}`);
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/upload-bit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${cfg.access_token}`,
+      },
+      body: JSON.stringify({ title: metaTitle, description: metaDesc, tags: metaTags, source }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || JSON.stringify(data));
+    console.log(`✓ Draft uploaded! bit id: ${data.bit.id}`);
     console.log('  Open Plethora → Your Profile → Uploads to preview it.');
   } catch (e) {
     console.error('Upload failed:', e.message);
