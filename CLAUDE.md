@@ -46,7 +46,7 @@ window.scrollerApp = {
 | Container size | 100 % viewport width × 100 % viewport height |
 | Background | `#000` by default |
 | DOM APIs | Full access — canvas, SVG, Web Audio, Pointer Events, Touch Events |
-| External URLs | **Not allowed** — no fetch, no CDN scripts, no images from the web |
+| External URLs | Allowed — fetch, CDN scripts, images all work (WebView has full network access) |
 | ES version | ES6+ (arrow functions, classes, template literals — all fine) |
 | Frameworks | None — vanilla JS only |
 | `window.scrollerApp` | Must be assigned at the **top level**, not inside a function |
@@ -215,6 +215,6 @@ plethora logout      # clear saved credentials
 - [ ] `window.scrollerApp` assigned at top level (not inside `init`)
 - [ ] `meta.title`, `meta.author`, `meta.description`, `meta.tags` all filled in
 - [ ] `destroy()` cancels every `requestAnimationFrame` and `setInterval`
-- [ ] No `fetch`, no external script tags, no CDN URLs
+- [ ] CDN scripts loaded via dynamic `<script>` injection (not ES `import`)
 - [ ] `npm run build` completes without errors
 - [ ] The bit makes sense without sound (some users have silent mode on)
