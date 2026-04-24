@@ -136,6 +136,29 @@ canvas.addEventListener('touchstart', e => { _lt = Date.now(); onTap(e.changedTo
 canvas.addEventListener('click',      e => { if (Date.now() - _lt < 500) return; onTap(e); });
 ```
 
+### Prevent the WebView from scrolling during touch interaction
+Without this, touching the canvas can scroll the whole page up/down in Plethora's WebView.
+```js
+// In init(), lock the container and canvas:
+container.style.overflow = 'hidden';
+container.style.touchAction = 'none';
+canvas.style.touchAction = 'none';
+
+// In touch event listeners, always use passive:false and preventDefault:
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  // your logic
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  // your logic
+}, { passive: false });
+```
+
+### Bottom safe zone — no interactive elements below ~88% height
+The bottom strip of the screen (~88–100% from top) is reserved for Plethora's swipe-up gesture to scroll to the next card. Placing buttons, tap targets, or interactive areas there will conflict with navigation. Keep all UI within the upper 88% of `container.clientHeight`.
+
 ### Web Audio — must be resumed on first user gesture
 ```js
 init(container) {
@@ -171,6 +194,7 @@ raf = requestAnimationFrame(loop);
 
 - **One clear mechanic** — a user should understand what to do in under 3 seconds.
 - **Immediate feedback** — every tap/swipe should produce a visible/audio response instantly.
+- **Sound** — every bit should have audio feedback. Taps, collisions, wins, and ambient loops all make bits feel alive. Use the Web Audio API (see pattern above). Never ship a bit without at least tap/event sounds.
 - **Graceful loop** — when time runs out or the game ends, show a score/result and let the user restart.
 - **No text walls** — if instructions are needed, show them as a short overlay that disappears on first tap.
 - **Dark background** — bits look best on `#111` or `#000`; bright backgrounds feel jarring in the dark feed.
@@ -218,3 +242,13 @@ plethora logout      # clear saved credentials
 - [ ] CDN scripts loaded via dynamic `<script>` injection (not ES `import`)
 - [ ] `npm run build` completes without errors
 - [ ] The bit makes sense without sound (some users have silent mode on)
+
+---
+
+## Best practices maintenance
+
+A living best-practices file lives at `BIT_BEST_PRACTICES.md` in this repo.
+
+**When to update it:** Any time you notice a non-obvious pattern, gotcha, or technique while writing or reviewing bit code — add it immediately. Do not wait to be asked. Examples: a subtle cleanup bug you fixed, a mobile-specific quirk, a performance trick that mattered.
+
+**How to update it:** Append to the relevant section (or add a new section). Keep entries concise — one paragraph or a short code snippet max.

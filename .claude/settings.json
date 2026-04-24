@@ -1,0 +1,7 @@
+{
+  "autoMemoryEnabled": false,
+  "skillOverrides": {
+    "episodic-memory:search-conversations": "off",
+    "episodic-memory:remembering-conversations": "off"
+  }
+}
