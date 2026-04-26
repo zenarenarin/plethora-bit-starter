@@ -5,7 +5,7 @@ const watch = process.argv.includes('--watch');
 const ctx = esbuild.context({
   entryPoints: ['src/index.js'],
   bundle: true,
-  format: 'iife',   // wraps code in a self-executing function; window.scrollerApp = {...} still reaches the global
+  format: 'iife',   // wraps code in a self-executing function; window.plethoraBit = {...} still reaches the global
   outfile: 'dist/bit.js',
   target: ['es6'],
   minify: !watch,

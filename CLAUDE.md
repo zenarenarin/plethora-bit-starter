@@ -5,37 +5,149 @@ that runs inside the Plethora app (a TikTok-style mobile feed).
 
 ## What a bit is
 
-A bit is a single JavaScript file that exports one global object: `window.scrollerApp`.
+A bit is a single JavaScript file that exports one global object: `window.plethoraBit`.
 It runs inside a full-screen WebView on Android/iOS with no framework, no bundler
-magic, and no network access. Think of it as a tiny game, animation, story, or
-educational widget that a user scrolls past and interacts with for ~20–60 seconds.
+magic. Think of it as a tiny game, animation, story, or educational widget that a
+user scrolls past and interacts with for ~20–60 seconds.
 
 ---
 
 ## The only contract that matters
 
 ```js
-window.scrollerApp = {
+window.plethoraBit = {
   meta: {
-    title: 'Your Bit Title',        // shown in the feed overlay
+    title: 'Your Bit Title',        // shown in the feed overlay (under 30 chars)
     author: 'YourUsername',         // your handle
     description: 'One line pitch.', // shown under the title
     tags: ['game'],                 // pick from: game, design, stories, education, creative
+    permissions: [],                // add 'camera' or 'microphone' only if actually needed
   },
 
   // Called every time the bit scrolls into view.
-  // container: a full-screen <div> you own — completely empty each call.
-  init(container) {
-    // Build your UI here. Attach event listeners. Start animation loops.
+  // ctx — rich context object (see below). No need to manage cleanup manually.
+  async init(ctx) {
+    // Build your UI here using ctx helpers.
+    ctx.platform.ready(); // REQUIRED — call at the end of init
   },
 
-  // Called when the bit scrolls off screen.
-  // MUST cancel all timers, animation frames, and event listeners.
-  // Failure to clean up causes audio/animation bleed into the next card.
-  destroy() {
-  },
+  // Optional lifecycle hooks
+  pause(ctx)  {},  // bit backgrounded — stop audio, heavy processing
+  resume(ctx) {},  // bit foregrounded again
 };
 ```
+
+---
+
+## The ctx object
+
+```js
+// Size & display
+ctx.width        // container CSS width in px
+ctx.height       // container CSS height in px
+ctx.dpr          // device pixel ratio
+ctx.safeArea     // { top, bottom, left, right } — keep controls above safeArea.bottom
+
+// Blessed Canvas — DPR-correct, sized to container, auto-removed on destroy
+const canvas = ctx.createCanvas2D();
+const g = canvas.getContext('2d');  // already pre-scaled for DPR
+
+// ctx.listen() — addEventListener that auto-removes on destroy
+ctx.listen(canvas, 'touchstart', (e) => { ... }, { passive: false });
+
+// ctx.raf() — requestAnimationFrame loop that auto-cancels on destroy + respects pause
+ctx.raf((dt) => {
+  // dt = milliseconds since last frame
+});
+
+// ctx.timeout / ctx.interval — auto-cleared on destroy
+ctx.timeout(cb, ms);
+ctx.interval(cb, ms);
+
+// Platform events — report meaningful moments to the platform
+ctx.platform.ready()                            // end of init — REQUIRED
+ctx.platform.start()                            // first real user interaction
+ctx.platform.interact({ type: 'tap' })          // each interaction
+ctx.platform.setScore(n)                        // current score (games)
+ctx.platform.setProgress(0.0–1.0)              // how far through the bit
+ctx.platform.complete({ score, result, durationMs })  // natural ending
+ctx.platform.fail({ reason })                   // game-over / failure
+ctx.platform.haptic('light' | 'medium' | 'heavy')     // phone vibration
+
+// Camera — declare permissions: ['camera'] in meta, then:
+const video = await ctx.camera.start({ facing: 'user' }); // or 'environment'
+// video is a ready-to-draw HTMLVideoElement (auto-cleaned on destroy)
+ctx.raf(() => {
+  g.drawImage(video, 0, 0, W, H);
+});
+
+ctx.camera.stop();                  // release stream + remove video element
+ctx.camera.pause();                 // freeze frame (stream stays alive)
+ctx.camera.resume();                // resume playback after pause
+const video2 = await ctx.camera.flip();  // toggle front↔back, returns new video element
+const snap = ctx.camera.snapshot(); // returns Canvas with current frame (or null)
+ctx.camera.facing                   // 'user' | 'environment' — current active camera
+ctx.camera.ready                    // boolean — video frame is available to draw
+ctx.camera.width                    // native stream width in px (0 before start)
+ctx.camera.height                   // native stream height in px (0 before start)
+ctx.camera.zoom(1.5);               // zoom level (1.0 = no zoom; silently ignored if unsupported)
+// The video element is inserted at opacity:0.001 so Android can decode frames for drawImage().
+// To show the raw feed directly (no canvas):
+video.style.opacity = '1';
+// To hide it again:
+video.style.opacity = '0.001';
+
+// Microphone — declare permissions: ['microphone'] in meta, then:
+const mic = await ctx.microphone.start({ fftSize: 2048, smoothing: 0 });
+const timeBuf = mic.getTimeDomainData();  // Float32Array — time domain (pitch detection)
+const freqBuf = mic.getFrequencyData();   // Uint8Array  — frequency bins (spectrum)
+mic.sampleRate   // AudioContext sample rate (e.g. 44100)
+mic.fftSize      // get/set — must be power of 2
+mic.smoothing    // get/set — 0.0–1.0 smoothing constant
+mic.analyser     // raw AnalyserNode for advanced use
+ctx.microphone.stop();  // release stream early (auto-called on destroy)
+
+// Audio — play sounds from URLs (no permissions needed)
+const sfx = ctx.audio.play('https://…/tap.mp3');        // one-shot
+const bgm = ctx.audio.loop('https://…/theme.mp3', { volume: 0.4 });  // looping
+sfx.pause();   sfx.resume();   sfx.stop();  // per-sound control
+sfx.volume = 0.8;              // 0.0–1.0
+sfx.paused;                    // boolean
+ctx.audio.stopAll();           // kill everything at once
+// All sounds auto-stop when the bit scrolls away.
+
+// Fetch — auto-aborts when the bit scrolls away (no leaked requests)
+const res = await ctx.fetch('https://api.example.com/data');
+const json = await res.json();
+// Supports all standard fetch options: method, headers, body, etc.
+// Silently swallows AbortError on destroy — no try/catch needed.
+
+// Storage — persists across sessions, namespaced per bit
+ctx.storage.set('highScore', 42);
+ctx.storage.get('highScore');   // 42 (or null if not set)
+ctx.storage.remove('highScore');
+ctx.storage.clear();            // wipe all keys for this bit
+
+// Script loader — deduped, Promise-based
+await ctx.loadScript('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js');
+// THREE is now available globally
+
+// Motion — device tilt and acceleration
+await ctx.motion.start();       // call on first user gesture (iOS 13+ needs permission)
+ctx.raf(() => {
+  ctx.motion.tilt.x   // front-back tilt, degrees  (-180..180)
+  ctx.motion.tilt.y   // left-right tilt, degrees   (-90..90)
+  ctx.motion.accel.x  // m/s² x-axis
+});
+
+// Assets — only if the bit was uploaded as a ZIP with an assets/ folder
+const img  = await ctx.assets.image('player.png');
+const sfx  = await ctx.assets.audio('tap.mp3');
+const data = await ctx.assets.json('level.json');
+const url  = ctx.assets.url('bg.webp');
+```
+
+No `destroy()` needed — all ctx helpers auto-cleanup when the bit scrolls away.
 
 ---
 
@@ -43,161 +155,126 @@ window.scrollerApp = {
 
 | Feature | Detail |
 |---|---|
-| Container size | 100 % viewport width × 100 % viewport height |
+| Container size | 100% viewport width × 100% viewport height |
 | Background | `#000` by default |
-| DOM APIs | Full access — canvas, SVG, Web Audio, Pointer Events, Touch Events |
-| External URLs | Allowed — fetch, CDN scripts, images all work (WebView has full network access) |
-| ES version | ES6+ (arrow functions, classes, template literals — all fine) |
+| DOM APIs | Full access — canvas, SVG, Web Audio, Touch Events |
+| External URLs | Allowed — fetch, CDN scripts, images all work |
+| ES version | ES6+ |
 | Frameworks | None — vanilla JS only |
-| `window.scrollerApp` | Must be assigned at the **top level**, not inside a function |
+| `window.plethoraBit` | Must be assigned at the **top level**, not inside a function |
 
 ---
 
-## Messages the shell sends into your bit
+## Canvas bit skeleton
 
-The host app may send these strings via `window.postMessage`:
-
-| Message | When |
-|---|---|
-| `init` | Bit scrolls into view (after first load) |
-| `destroy` | Bit scrolls out of view |
-| `restart` | User taps the ↺ restart button (games only) |
-
-You do **not** need to handle these yourself — the shell calls `init(container)` and
-`destroy()` for you. Only handle `restart` if you want custom reset logic beyond
-a full re-init.
-
----
-
-## Navigation
-
-The shell intercepts vertical swipes and posts `nav:next` / `nav:prev` to the parent.
-Do **not** call `window.parent.postMessage` yourself unless you have a specific reason.
-Horizontal swipes and taps are passed through to your bit normally.
-
----
-
-## Patterns and tips
-
-### Canvas bit skeleton
 ```js
-window.scrollerApp = {
-  meta: { title: '…', author: '…', description: '…', tags: ['game'] },
+window.plethoraBit = {
+  meta: { title: '…', author: '…', description: '…', tags: ['game'], permissions: [] },
 
-  init(container) {
-    const canvas = document.createElement('canvas');
-    canvas.width  = container.clientWidth;
-    canvas.height = container.clientHeight;
-    canvas.style.cssText = 'display:block;width:100%;height:100%;';
-    container.appendChild(canvas);
+  async init(ctx) {
+    const W = ctx.width, H = ctx.height;
+    const canvas = ctx.createCanvas2D();
+    const g = canvas.getContext('2d');
 
-    const ctx = canvas.getContext('2d');
-    let raf;
-
-    const loop = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      // draw here
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-
-    // store refs for destroy
-    this._raf = raf;
-    this._canvas = canvas;
-
-    // touch example
-    canvas.addEventListener('pointerdown', this._onTap = (e) => {
-      const x = e.offsetX, y = e.offsetY;
+    ctx.listen(canvas, 'touchstart', (e) => {
+      e.preventDefault();
+      ctx.platform.start();
+      ctx.platform.haptic('light');
+      const tx = e.changedTouches[0].clientX;
+      const ty = e.changedTouches[0].clientY;
       // handle tap
+    }, { passive: false });
+
+    ctx.raf((dt) => {
+      g.clearRect(0, 0, W, H);
+      // draw here
     });
+
+    ctx.platform.ready();
   },
 
-  destroy() {
-    cancelAnimationFrame(this._raf);
-    this._canvas?.removeEventListener('pointerdown', this._onTap);
-    this._canvas = null;
-  },
+  pause(ctx)  {},
+  resume(ctx) {},
 };
 ```
 
-### Touch on mobile: use `changedTouches`, not `touches`
+---
+
+## Touch guidance
+
+### Use `changedTouches[0]`, not `touches[0]`
 ```js
-// WRONG — touches[0] gives the oldest finger, not the newly landed one
+// WRONG — touches[0] gives the oldest active finger
 canvas.addEventListener('touchstart', e => hit(e.touches[0].clientX));
 
 // RIGHT — changedTouches[0] is the finger that just touched down
-canvas.addEventListener('touchstart', e => hit(e.changedTouches[0].clientX));
+ctx.listen(canvas, 'touchstart', e => hit(e.changedTouches[0].clientX));
 ```
 
-### Prevent double-fire (touchstart + click)
+### Prevent WebView scroll during touch interaction
 ```js
-let _lt = 0;
-canvas.addEventListener('touchstart', e => { _lt = Date.now(); onTap(e.changedTouches[0]); }, { passive: true });
-canvas.addEventListener('click',      e => { if (Date.now() - _lt < 500) return; onTap(e); });
-```
-
-### Prevent the WebView from scrolling during touch interaction
-Without this, touching the canvas can scroll the whole page up/down in Plethora's WebView.
-```js
-// In init(), lock the container and canvas:
-container.style.overflow = 'hidden';
-container.style.touchAction = 'none';
-canvas.style.touchAction = 'none';
-
-// In touch event listeners, always use passive:false and preventDefault:
-canvas.addEventListener('touchstart', (e) => {
+ctx.listen(canvas, 'touchstart', (e) => {
   e.preventDefault();
   // your logic
 }, { passive: false });
 
-canvas.addEventListener('touchmove', (e) => {
+ctx.listen(canvas, 'touchmove', (e) => {
   e.preventDefault();
-  // your logic
 }, { passive: false });
 ```
 
-### Bottom safe zone — no interactive elements below ~88% height
-The bottom strip of the screen (~88–100% from top) is reserved for Plethora's swipe-up gesture to scroll to the next card. Placing buttons, tap targets, or interactive areas there will conflict with navigation. Keep all UI within the upper 88% of `container.clientHeight`.
+### Bottom safe zone
+Keep all interactive controls above `ctx.safeArea.bottom` — the bottom strip is
+reserved for the swipe-up gesture that advances to the next card.
 
-### Web Audio — must be resumed on first user gesture
+---
+
+## CDN / External Libraries
+
 ```js
-init(container) {
-  this._ctx = new AudioContext();
-  container.addEventListener('pointerdown', () => this._ctx.resume(), { once: true });
-},
-destroy() {
-  this._ctx?.close();
-  this._ctx = null;
-},
+// Preferred — ctx.loadScript() is deduped and Promise-based
+await ctx.loadScript('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js');
+// THREE is now available globally
 ```
 
-### Timed game pattern (20-second countdown)
+## Web Audio (advanced)
+
+`ctx.audio` covers playback and `ctx.microphone` covers analysis. If you need raw Web Audio (custom effects, synthesis):
 ```js
-let startTime, raf;
-const DURATION = 20;
-
-const loop = (now) => {
-  const elapsed = (now - startTime) / 1000;
-  const left = Math.max(0, DURATION - elapsed);
-  if (left === 0) { endGame(); return; }
-  // draw frame
-  raf = requestAnimationFrame(loop);
-};
-
-startTime = performance.now();
-raf = requestAnimationFrame(loop);
+async init(ctx) {
+  const audioCtx = new AudioContext();
+  ctx.listen(canvas, 'touchstart', () => audioCtx.resume(), { once: true });
+  ctx.onDestroy(() => audioCtx.close());
+}
 ```
 
 ---
 
-## What makes a good bit
+## ZIP upload (bits with assets)
 
-- **One clear mechanic** — a user should understand what to do in under 3 seconds.
-- **Immediate feedback** — every tap/swipe should produce a visible/audio response instantly.
-- **Sound** — every bit should have audio feedback. Taps, collisions, wins, and ambient loops all make bits feel alive. Use the Web Audio API (see pattern above). Never ship a bit without at least tap/event sounds.
-- **Graceful loop** — when time runs out or the game ends, show a score/result and let the user restart.
-- **No text walls** — if instructions are needed, show them as a short overlay that disappears on first tap.
-- **Dark background** — bits look best on `#111` or `#000`; bright backgrounds feel jarring in the dark feed.
+If your bit uses local images, audio, or data files, structure it as a ZIP:
+
+```
+my-bit.zip
+├── main.js          ← your bit source (window.plethoraBit = {...})
+├── manifest.json    ← { "entry": "main.js", "title": "...", "tags": [...] }
+└── assets/
+    ├── player.png
+    ├── tap.mp3
+    └── level.json
+```
+
+Then in your bit:
+```js
+const img  = await ctx.assets.image('player.png');
+const sfx  = await ctx.assets.audio('tap.mp3');
+const data = await ctx.assets.json('level.json');
+```
+
+Upload:
+```bash
+plethora upload my-bit.zip --title "My Bit"
+```
 
 ---
 
@@ -205,22 +282,24 @@ raf = requestAnimationFrame(loop);
 
 ```bash
 npm install          # first time only
-npm run build        # outputs dist/bit.js
+npm run build        # outputs dist/bit.js (single JS file bits)
 ```
 
-**CLI upload (recommended):**
+**CLI upload:**
 ```bash
-# First time: from inside plethora-bit-starter
+# First time:
 npm install
 npm link             # makes `plethora` available globally
-
 plethora login       # enter email + password once
 ```
 
 ```bash
-# Each time you want to upload
+# Each upload
 npm run build
 plethora upload dist/bit.js --title "My Bit" --tags game
+
+# ZIP bits with assets:
+plethora upload my-bit.zip --title "My Bit"
 
 # The bit appears as a DRAFT in your Plethora profile.
 # Tap it to preview. Tap Publish to go live, or:
@@ -236,12 +315,16 @@ plethora logout      # clear saved credentials
 
 ## Quick checklist before uploading
 
-- [ ] `window.scrollerApp` assigned at top level (not inside `init`)
+- [ ] `window.plethoraBit` assigned at top level (not inside `init`)
 - [ ] `meta.title`, `meta.author`, `meta.description`, `meta.tags` all filled in
-- [ ] `destroy()` cancels every `requestAnimationFrame` and `setInterval`
-- [ ] CDN scripts loaded via dynamic `<script>` injection (not ES `import`)
+- [ ] `ctx.platform.ready()` called at end of `init`
+- [ ] `ctx.platform.start()` called on first user touch
+- [ ] Using `ctx.listen()` — not raw `addEventListener`
+- [ ] Using `ctx.raf()` — not raw `requestAnimationFrame`
+- [ ] No `destroy()` needed — ctx cleans up automatically
+- [ ] CDN scripts loaded via `ctx.loadScript(url)` or dynamic `<script>` injection (not ES `import`)
 - [ ] `npm run build` completes without errors
-- [ ] The bit makes sense without sound (some users have silent mode on)
+- [ ] Bit makes sense without sound (some users have silent mode on)
 
 ---
 
@@ -249,6 +332,8 @@ plethora logout      # clear saved credentials
 
 A living best-practices file lives at `BIT_BEST_PRACTICES.md` in this repo.
 
-**When to update it:** Any time you notice a non-obvious pattern, gotcha, or technique while writing or reviewing bit code — add it immediately. Do not wait to be asked. Examples: a subtle cleanup bug you fixed, a mobile-specific quirk, a performance trick that mattered.
+**When to update it:** Any time you notice a non-obvious pattern, gotcha, or technique
+while writing or reviewing bit code — add it immediately. Do not wait to be asked.
 
-**How to update it:** Append to the relevant section (or add a new section). Keep entries concise — one paragraph or a short code snippet max.
+**How to update it:** Append to the relevant section (or add a new section). Keep
+entries concise — one paragraph or a short code snippet max.

@@ -116,8 +116,8 @@ window.scrollerApp = {
 
     function onBorder(x,y){
       if (x===0||x===gw-1||y===0||y===gh-1) return true;
-      // also on filled edges
-      if (cells[y][x]===1) return false;
+      // filled cells are safe border territory
+      if (cells[y][x]===1) return true;
       // check if on edge of a filled area
       const adj=[[1,0],[-1,0],[0,1],[0,-1]];
       for (const [dx,dy] of adj){
@@ -132,7 +132,7 @@ window.scrollerApp = {
       if (!running) return;
       const nx = player.x + dx, ny = player.y + dy;
       if (nx<0||nx>=gw||ny<0||ny>=gh) return;
-      if (cells[ny][nx]===1) return;
+      // filled cells are passable safe territory — stop drawing if we reach one
       if (cells[ny][nx]===2) {
         // self trail crossing = die
         die(); return;
@@ -238,9 +238,9 @@ window.scrollerApp = {
       if (!heldDir) return;
       const t=e.changedTouches[0];
       const dx=t.clientX-heldDir.sx, dy=t.clientY-heldDir.sy;
-      if (Math.hypot(dx,dy)<20) return;
+      if (Math.hypot(dx,dy)<10) return;
       const now=Date.now();
-      if (now-lastMove<80) return;
+      if (now-lastMove<45) return;
       lastMove = now;
       if (Math.abs(dx)>Math.abs(dy)) tryMove(dx>0?1:-1, 0);
       else tryMove(0, dy>0?1:-1);

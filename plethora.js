@@ -156,7 +156,7 @@ async function cmdUpload(args) {
   }
 
   if (!filePath) {
-    console.error('Usage: plethora upload <file.js> [--title "..."] [--desc "..."] [--tags game,design]');
+    console.error('Usage: plethora upload <file.js|file.zip> [--title "..."] [--desc "..."] [--tags game,design]');
     process.exit(1);
   }
 
@@ -166,11 +166,64 @@ async function cmdUpload(args) {
     process.exit(1);
   }
 
+  const isZip = absPath.endsWith('.zip');
+
+  if (isZip) {
+    // ZIP upload — multipart/form-data
+    if (!title) {
+      console.error('ZIP uploads require --title "My Bit"');
+      process.exit(1);
+    }
+    console.log(`Uploading ZIP "${title}" as draft…`);
+
+    const { FormData, Blob } = await import('node:buffer').catch(() => ({}));
+    // Node 18+ has FormData natively; fall back to a simple multipart builder
+    const zipBytes = fs.readFileSync(absPath);
+
+    // Build multipart body manually for maximum Node version compatibility
+    const boundary = `----PlethoraBoundary${Date.now()}`;
+    const parts = [];
+    const addField = (name, value) => {
+      parts.push(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}`
+      );
+    };
+    addField('title', title);
+    if (description) addField('description', description);
+    if (tags.length)  addField('tags', tags.join(','));
+
+    const header = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${path.basename(absPath)}"\r\nContent-Type: application/zip\r\n\r\n`;
+    const footer = `\r\n--${boundary}--`;
+
+    const headerBuf  = Buffer.from(parts.join('\r\n') + '\r\n' + header);
+    const footerBuf  = Buffer.from(footer);
+    const body       = Buffer.concat([headerBuf, zipBytes, footerBuf]);
+
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/upload-bit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type':  `multipart/form-data; boundary=${boundary}`,
+          'Authorization': `Bearer ${cfg.access_token}`,
+        },
+        body,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || JSON.stringify(data));
+      console.log(`✓ ZIP uploaded! bit id: ${data.bit.id}`);
+      console.log('  Open Plethora → Your Profile → Uploads to preview it.');
+    } catch (e) {
+      console.error('Upload failed:', e.message);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // JS upload — JSON body
   const source = fs.readFileSync(absPath, 'utf8');
 
-  // Basic validation
-  if (!source.includes('scrollerApp')) {
-    console.error('Error: file does not define window.scrollerApp');
+  if (!source.includes('plethoraBit') && !source.includes('scrollerApp')) {
+    console.error('Error: file does not define window.plethoraBit (or legacy window.scrollerApp)');
     process.exit(1);
   }
 
@@ -237,7 +290,16 @@ async function cmdPublish(args) {
   }
 
   try {
-    await sbUpdate('bits', id, { published: true }, cfg.access_token);
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/upload-bit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${cfg.access_token}`,
+      },
+      body: JSON.stringify({ action: 'publish', id }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || JSON.stringify(data));
     console.log(`✓ Published! bit ${id}`);
   } catch (e) {
     console.error('Failed:', e.message);
@@ -255,18 +317,23 @@ Plethora CLI — upload bits from the command line
 Commands:
   plethora login                              Sign in with email + password
   plethora logout                             Clear saved credentials
-  plethora upload <file.js> [flags]           Upload a bit as a draft
-    --title "My Bit"
+  plethora upload <file.js|file.zip> [flags]  Upload a bit as a draft
+    --title "My Bit"                          (required for .zip uploads)
     --desc  "A short description"
     --tags  game,design
   plethora list                               List your bits
   plethora publish <bit-id>                   Publish a draft
 
-Workflow:
-  1. npm run build            (in plethora-bit-starter)
-  2. plethora upload dist/bit.js --title "..."
+Workflow — single JS file:
+  1. npm run build
+  2. plethora upload dist/bit.js --title "My Bit" --tags game
   3. Open Plethora app → profile → Uploads → tap draft to preview
   4. plethora publish <id>    (or tap Publish in the app)
+
+Workflow — ZIP with assets:
+  1. Create: main.js + assets/player.png + assets/tap.mp3 + manifest.json
+  2. zip my-bit.zip main.js manifest.json assets/
+  3. plethora upload my-bit.zip --title "My Bit"
 `;
 
 (async () => {
