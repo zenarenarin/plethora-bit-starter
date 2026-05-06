@@ -4,7 +4,7 @@ window.plethoraBit = {
     author: 'plethora',
     description: 'Swipe to explore a surreal utopia.',
     tags: ['creative'],
-    permissions: [],
+    permissions: ['networkFetch'],
   },
 
   async init(ctx) {
@@ -22,7 +22,7 @@ window.plethoraBit = {
       i.crossOrigin = 'anonymous';
       i.onload = () => resolve(i);
       i.onerror = reject;
-      i.src = (window.__BUNDLE_URL__ || '') + 'surrealutopia.webp';
+      i.src = ctx.assets.url('surrealutopia.webp');
     });
 
     const BASE_SCALE = H / img.naturalHeight;

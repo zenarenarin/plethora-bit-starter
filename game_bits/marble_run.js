@@ -7,6 +7,7 @@ window.scrollerApp = {
     author: 'plethora',
     description: 'Tilt the board. Roll the marble. Find the goal.',
     tags: ['game'],
+    permissions: ['audio', 'motion', 'networkFetch'],
   },
 
   _app: null,

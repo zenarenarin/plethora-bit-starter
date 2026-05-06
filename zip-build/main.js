@@ -4,7 +4,7 @@ window.plethoraBit = {
     author: 'plethora',
     description: 'Swipe to explore a sprawling dystopian city.',
     tags: ['creative'],
-    permissions: [],
+    permissions: ['networkFetch'],
   },
 
   async init(ctx) {
@@ -23,7 +23,7 @@ window.plethoraBit = {
       i.crossOrigin = 'anonymous';
       i.onload = () => resolve(i);
       i.onerror = reject;
-      i.src = (window.__BUNDLE_URL__ || '') + 'thatdystopiancity.jpg';
+      i.src = ctx.assets.url('thatdystopiancity.jpg');
     });
 
     const ZOOM = 2.0;

@@ -1,1 +1,22 @@
-{ "entry": "main.js", "title": "explore", "tags": ["creative"] }
+{
+  "schemaVersion": 1,
+  "runtime": "plethora-bit@1",
+  "entry": "main.js",
+  "title": "explore",
+  "description": "Swipe to explore a sprawling dystopian city.",
+  "tags": [
+    "creative"
+  ],
+  "permissions": [
+    "networkFetch"
+  ],
+  "assets": [
+    {
+      "path": "thatdystopiancity.jpg",
+      "mime": "image/jpeg",
+      "size": 382232,
+      "sha256": "sha256:d9b4a98a613c0e6cd2ed8f6ad39aba88c1d49d5d5f1a97c05c8691defe565822",
+      "role": "background"
+    }
+  ]
+}

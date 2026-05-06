@@ -1,404 +1,324 @@
 // DONKEY KONG — Climb to the top dodging barrels (Plethora Bit)
-window.scrollerApp = {
+window.plethoraBit = {
   meta: {
     title: 'Donkey Kong',
-    author: 'ArcadeBits',
-    description: 'Climb ladders, jump barrels, save the day.',
+    author: 'plethora',
+    description: 'Climb ladders, jump barrels. Reach the top!',
     tags: ['game'],
+    permissions: [],
   },
 
-  init(container) {
-    const self = this;
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'position:absolute;inset:0;background:#000;overflow:hidden;font-family:"Courier New",monospace;';
-    container.appendChild(wrap);
+  async init(ctx) {
+    const W = ctx.width, H = ctx.height;
+    const canvas = ctx.createCanvas2D();
+    const g = canvas.getContext('2d');
+    const SAFE = ctx.safeArea.bottom;
 
-    const canvas = document.createElement('canvas');
-    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;touch-action:none;image-rendering:pixelated;';
-    wrap.appendChild(canvas);
+    let audioCtx = null;
+    function ensureAudio() {
+      if (!audioCtx) audioCtx = new AudioContext();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    }
+    function playTone(freq, dur, type = 'square', vol = 0.25) {
+      if (!audioCtx) return;
+      const o = audioCtx.createOscillator(), gain = audioCtx.createGain();
+      o.connect(gain); gain.connect(audioCtx.destination);
+      o.type = type; o.frequency.value = freq;
+      gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+      o.start(); o.stop(audioCtx.currentTime + dur);
+    }
+    function playJump() { playTone(600, 0.1, 'square', 0.25); }
+    function playDie() { [400, 320, 240].forEach((f, i) => setTimeout(() => playTone(f, 0.18, 'sawtooth', 0.3), i * 110)); }
+    function playScore() { playTone(880, 0.12, 'sine', 0.3); }
+    function playWin() { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => playTone(f, 0.2, 'sine', 0.4), i * 120)); }
+    function playBarrel() { playTone(180, 0.08, 'square', 0.2); }
 
-    const hud = document.createElement('div');
-    hud.style.cssText = 'position:absolute;top:8px;left:0;right:0;display:flex;justify-content:space-between;padding:0 14px;font:bold 14px "Courier New",monospace;letter-spacing:2px;color:#FF2222;text-shadow:0 0 6px #FF0000;pointer-events:none;z-index:3;';
-    hud.innerHTML = '<span id="dk-score">SCORE 0</span><span id="dk-lives">LIVES ♥♥♥</span>';
-    wrap.appendChild(hud);
-
-    const restart = document.createElement('button');
-    restart.textContent = '↺ RESTART';
-    restart.style.cssText = 'position:absolute;bottom:14px;right:14px;padding:8px 14px;font:bold 13px "Courier New",monospace;letter-spacing:2px;color:#FFF;background:linear-gradient(#B22222,#600);border:3px solid #FFD700;border-radius:4px;box-shadow:0 0 10px #FFD700;z-index:4;touch-action:manipulation;';
-    wrap.appendChild(restart);
-
-    const jumpBtn = document.createElement('button');
-    jumpBtn.textContent = 'JUMP';
-    jumpBtn.style.cssText = 'position:absolute;bottom:14px;left:14px;width:90px;height:54px;font:bold 16px "Courier New",monospace;letter-spacing:3px;color:#000;background:linear-gradient(#FFE066,#FF9900);border:3px solid #FF0000;border-radius:50%;box-shadow:0 0 12px #FF0000;z-index:4;touch-action:manipulation;';
-    wrap.appendChild(jumpBtn);
-
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:rgba(0,0,0,0.75);color:#FFD700;z-index:2;text-align:center;font-family:"Courier New",monospace;font-weight:bold;letter-spacing:3px;';
-    wrap.appendChild(overlay);
-
-    const ctx = canvas.getContext('2d');
-    const dpr = window.devicePixelRatio || 1;
-    let W, H;
-
-    // Level: 5 platforms, alternating slopes
-    // world coordinates in a virtual 200x300 space, scaled
+    // Virtual world dimensions
     const VW = 200, VH = 300;
+    function SX() { return W / VW; }
+    function SY() { return (H - SAFE - 20) / VH; }
+    function vx(x) { return x * SX(); }
+    function vy(y) { return y * SY(); }
+
     const PLATFORMS = [
-      { y: 280, x1: 5, x2: 195, slope: 0 },   // bottom (ground)
-      { y: 230, x1: 5, x2: 195, slope: -0.1 },
-      { y: 180, x1: 5, x2: 195, slope:  0.1 },
-      { y: 130, x1: 5, x2: 195, slope: -0.1 },
-      { y: 80,  x1: 5, x2: 195, slope: 0 },   // top where Kong is
+      { y: 280, x1: 5, x2: 195, slope: 0 },
+      { y: 230, x1: 5, x2: 195, slope: -0.08 },
+      { y: 180, x1: 5, x2: 195, slope: 0.08 },
+      { y: 130, x1: 5, x2: 195, slope: -0.08 },
+      { y: 80, x1: 5, x2: 195, slope: 0 },
     ];
     const LADDERS = [
-      { x: 40,  y1: 230, y2: 280 },
+      { x: 40, y1: 230, y2: 280 },
       { x: 160, y1: 180, y2: 230 },
-      { x: 50,  y1: 130, y2: 180 },
-      { x: 150, y1: 80,  y2: 130 },
+      { x: 50, y1: 130, y2: 180 },
+      { x: 150, y1: 80, y2: 130 },
     ];
-
-    let player, barrels, score, lives, running, win, particles, tick, spawnT;
 
     function platY(p, x) { return p.y + (x - p.x1) * p.slope; }
     function platAt(x, y) {
-      for (let i=0;i<PLATFORMS.length;i++){
-        const p = PLATFORMS[i];
-        if (x>=p.x1 && x<=p.x2) {
+      for (const p of PLATFORMS) {
+        if (x >= p.x1 && x <= p.x2) {
           const py = platY(p, x);
-          if (Math.abs(y - py) < 4) return p;
+          if (Math.abs(y - py) < 5) return p;
         }
       }
       return null;
     }
 
+    let player, barrels, particles, score, lives, running, win, tick, spawnT, started;
+    let leftDown = false, rightDown = false, upDown = false, downDown = false;
+
     function reset() {
-      player = { x: 30, y: 280, vy: 0, onGround: true, climbing: false, jumpT:0, face:1 };
-      barrels = [];
-      score = 0; lives = 3; running = true; win = false;
-      particles = []; tick=0; spawnT=0;
-      updateHUD();
-      overlay.style.display = 'none';
-    }
-    function updateHUD(){
-      hud.querySelector('#dk-score').textContent = 'SCORE ' + score;
-      hud.querySelector('#dk-lives').textContent = 'LIVES ' + '♥'.repeat(Math.max(0,lives));
+      player = { x: 30, y: 280, vy: 0, onGround: true, climbing: false, jumpT: 0, face: 1 };
+      barrels = []; particles = [];
+      score = 0; lives = 3; running = true; win = false; tick = 0; spawnT = 0;
     }
 
-    function resize() {
-      const r = wrap.getBoundingClientRect();
-      W = r.width; H = r.height;
-      canvas.width = W*dpr; canvas.height = H*dpr;
-      canvas.style.width = W+'px'; canvas.style.height = H+'px';
-      ctx.setTransform(dpr,0,0,dpr,0,0);
-    }
-    resize();
-    self._onResize = resize;
-    window.addEventListener('resize', self._onResize);
-
-    function W2X(x){ return x / VW * W; }
-    function W2Y(y){ return y / VH * H; }
-    function SX(){ return W/VW; }
-    function SY(){ return H/VH; }
-
-    // --- Drawing ---
-    function drawBG() {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0,0,W,H);
-      // CRT vertical neon columns
-      const grad = ctx.createLinearGradient(0,0,0,H);
-      grad.addColorStop(0,'rgba(255,0,80,0.08)');
-      grad.addColorStop(1,'rgba(0,0,0,0)');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0,0,W,H);
-      // scanlines
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
-      for (let y=0;y<H;y+=3) ctx.fillRect(0,y,W,1);
-    }
-    function drawGirder(p) {
-      const y = W2Y(p.y);
-      const y2 = W2Y(platY(p, p.x2));
-      ctx.strokeStyle = '#FF00AA';
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(W2X(p.x1), y);
-      ctx.lineTo(W2X(p.x2), y2);
-      ctx.stroke();
-      // rivets
-      ctx.fillStyle = '#FFE066';
-      for (let x=p.x1+5;x<p.x2;x+=15){
-        ctx.fillRect(W2X(x)-1, W2Y(platY(p,x))-1, 2, 2);
-      }
-    }
-    function drawLadder(l) {
-      ctx.strokeStyle = '#00FFDD';
-      ctx.lineWidth = 2;
-      const x1 = W2X(l.x-3), x2=W2X(l.x+3);
-      const y1 = W2Y(l.y1), y2=W2Y(l.y2);
-      ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x1,y2); ctx.moveTo(x2,y1); ctx.lineTo(x2,y2); ctx.stroke();
-      for (let y=l.y1+4;y<l.y2;y+=6){
-        const ys = W2Y(y);
-        ctx.beginPath(); ctx.moveTo(x1,ys); ctx.lineTo(x2,ys); ctx.stroke();
-      }
-    }
-    function drawKong() {
-      const x = W2X(20), y = W2Y(80)-W2Y(20);
-      ctx.fillStyle = '#8B4513';
-      ctx.fillRect(x, y, W2X(40)-W2X(0)+10, W2Y(20));
-      ctx.fillStyle = '#D2691E';
-      ctx.fillRect(x+4, y+4, 20*SX(), 10*SY());
-      // eyes
-      ctx.fillStyle = '#FFF';
-      ctx.fillRect(x+8, y+6, 3, 4);
-      ctx.fillRect(x+18, y+6, 3, 4);
-      ctx.fillStyle = '#000';
-      ctx.fillRect(x+9, y+7, 2, 2);
-      ctx.fillRect(x+19, y+7, 2, 2);
-    }
-    function drawMario() {
-      const px = W2X(player.x), py = W2Y(player.y);
-      const w = 10*SX(), h = 16*SY();
-      // hat
-      ctx.fillStyle = '#FF0000';
-      ctx.fillRect(px-w/2, py-h, w, h*0.25);
-      ctx.fillRect(px-w/2-1, py-h*0.78, w+2, h*0.12);
-      // face
-      ctx.fillStyle = '#FFCC99';
-      ctx.fillRect(px-w/2+1, py-h*0.7, w-2, h*0.28);
-      // eyes
-      ctx.fillStyle = '#000';
-      ctx.fillRect(px + (player.face>0?0:-w/2+1), py-h*0.6, 2, 2);
-      // overalls
-      ctx.fillStyle = '#2222FF';
-      ctx.fillRect(px-w/2, py-h*0.4, w, h*0.4);
-      // legs
-      ctx.fillStyle = '#FF0000';
-      ctx.fillRect(px-w/2, py-h*0.15, w*0.45, h*0.15);
-      ctx.fillRect(px+w*0.05, py-h*0.15, w*0.45, h*0.15);
-      // shoes
-      ctx.fillStyle = '#663300';
-      ctx.fillRect(px-w/2, py-2, w*0.5, 2);
-      ctx.fillRect(px+w*0.05, py-2, w*0.5, 2);
-    }
-    function drawBarrel(b){
-      const bx = W2X(b.x), by = W2Y(b.y);
-      ctx.save();
-      ctx.translate(bx, by - 4*SY());
-      ctx.rotate(b.rot);
-      ctx.fillStyle = '#CC6600';
-      ctx.fillRect(-5*SX(), -4*SY(), 10*SX(), 8*SY());
-      ctx.fillStyle = '#663300';
-      ctx.fillRect(-5*SX(), -3*SY(), 10*SX(), 1.5);
-      ctx.fillRect(-5*SX(),  1.5*SY(), 10*SX(), 1.5);
-      ctx.fillStyle = '#FF9933';
-      ctx.fillRect(-4*SX(),-3*SY(),8*SX(),1);
-      ctx.restore();
-    }
-    function drawPrincess(){
-      const x = W2X(170), y = W2Y(75);
-      ctx.fillStyle = '#FF69B4';
-      ctx.fillRect(x-5, y-14, 10, 14);
-      ctx.fillStyle = '#FFCC99';
-      ctx.fillRect(x-4, y-20, 8, 6);
-      ctx.fillStyle = '#FFFF00';
-      ctx.fillRect(x-5, y-22, 10, 3);
-      // HELP! text
-      ctx.fillStyle = '#FFF';
-      ctx.font = 'bold 8px "Courier New"';
-      ctx.fillText('HELP!', x-10, y-26);
-    }
-    function drawParticles(){
-      particles.forEach(p=>{
-        ctx.globalAlpha = p.life/p.max;
-        ctx.fillStyle = p.c;
-        ctx.fillRect(p.x-1, p.y-1, 3, 3);
-      });
-      ctx.globalAlpha = 1;
-    }
-    function addParticles(x,y,c,n=12){
-      for(let i=0;i<n;i++) particles.push({x,y,vx:(Math.random()-0.5)*4,vy:-Math.random()*3,c,life:24,max:24});
-    }
-
-    // --- Logic ---
-    let leftDown=false, rightDown=false, upDown=false, downDown=false;
-
-    function jump(){
-      if (player.onGround && !player.climbing){
-        player.vy = -3.5; player.onGround=false; player.jumpT=1;
+    function jump() {
+      if (player.onGround && !player.climbing) {
+        player.vy = -3.5; player.onGround = false; player.jumpT = 1;
+        playJump();
       }
     }
 
-    function step(){
-      if (!running) return;
+    // Touch controls: left half = walk left, right half = walk right
+    // Swipe up = climb up, swipe down = climb down
+    // Double-tap = jump
+    let touchStartX = null, touchStartY = null, touchStartTime = 0, lastTapTime = 0;
+
+    ctx.listen(canvas, 'touchstart', (e) => {
+      e.preventDefault();
+      ensureAudio();
+      if (!started) { started = true; ctx.platform.start(); reset(); return; }
+      if (!running) { reset(); started = true; return; }
+      const t = e.changedTouches[0];
+      touchStartX = t.clientX; touchStartY = t.clientY;
+      touchStartTime = Date.now();
+      const now = Date.now();
+      if (now - lastTapTime < 300) jump();
+      lastTapTime = now;
+      if (t.clientX < W / 2) { leftDown = true; rightDown = false; player.face = -1; }
+      else { rightDown = true; leftDown = false; player.face = 1; }
+    }, { passive: false });
+
+    ctx.listen(canvas, 'touchmove', (e) => {
+      e.preventDefault();
+      if (!touchStartY) return;
+      const t = e.changedTouches[0];
+      const dy = t.clientY - touchStartY;
+      upDown = dy < -20; downDown = dy > 20;
+      if (Math.abs(dy) > 20) { leftDown = false; rightDown = false; }
+    }, { passive: false });
+
+    ctx.listen(canvas, 'touchend', (e) => {
+      e.preventDefault();
+      leftDown = rightDown = upDown = downDown = false;
+      touchStartX = touchStartY = null;
+    }, { passive: false });
+
+    reset();
+
+    ctx.raf((dt) => {
+      const sec = dt / 1000;
       tick++;
 
-      // spawn barrels
-      spawnT++;
-      if (spawnT > 80){
-        spawnT = 0;
-        barrels.push({ x: 30, y: 80, vx: 0.9, vy: 0, rot:0, onPlat: PLATFORMS[4] });
+      if (running && started) {
+        // Spawn barrels
+        spawnT += dt;
+        if (spawnT > 2000) {
+          spawnT = 0;
+          barrels.push({ x: 30, y: 80, vx: 1.0, vy: 0, rot: 0, onPlat: PLATFORMS[4] });
+          playBarrel();
+        }
+
+        // Player movement
+        const spd = 60 * sec;
+        const onL = LADDERS.find(l => Math.abs(l.x - player.x) < 5 && player.y >= l.y1 - 3 && player.y <= l.y2 + 3);
+        if (upDown && onL) { player.climbing = true; player.y -= spd; if (player.y < onL.y1) player.y = onL.y1; }
+        else if (downDown && onL) { player.climbing = true; player.y += spd; if (player.y > onL.y2) player.y = onL.y2; }
+        if (player.climbing && !onL) player.climbing = false;
+
+        if (!player.climbing) {
+          if (leftDown) player.x -= spd;
+          if (rightDown) player.x += spd;
+          player.vy += 0.3;
+          player.y += player.vy;
+          const p = platAt(player.x, player.y);
+          if (p && player.vy >= 0) {
+            player.y = platY(p, player.x);
+            player.vy = 0;
+            player.onGround = true; player.jumpT = 0;
+          } else {
+            player.onGround = false;
+          }
+        }
+        player.x = Math.max(5, Math.min(195, player.x));
+
+        // Win condition
+        if (player.y <= 85 && player.x > 155) {
+          win = true; running = false; score += 500;
+          ctx.platform.complete({ score });
+          playWin();
+        }
+
+        // Barrels
+        barrels.forEach(b => {
+          b.rot += b.vx * 0.2;
+          b.x += b.vx;
+          const p2 = platAt(b.x, b.y);
+          if (p2) { b.y = platY(p2, b.x); b.vy = 0; }
+          else { b.vy += 0.25; b.y += b.vy; }
+          if (b.x < 3 || b.x > 197) b.vx = -b.vx;
+          // Jump over barrel
+          if (player.jumpT > 0 && Math.abs(player.x - b.x) < 8 && player.y < b.y - 2) {
+            score += 100; ctx.platform.setScore(score); b.scored = true; playScore();
+          }
+          // Collision
+          if (Math.abs(player.x - b.x) < 7 && Math.abs(player.y - b.y) < 12) {
+            lives--;
+            for (let i = 0; i < 12; i++) particles.push({ x: vx(player.x), y: vy(player.y), vx: (Math.random() - 0.5) * 200, vy: -Math.random() * 150 - 50, c: '#FF0000', life: 0.5 });
+            player.x = 30; player.y = 280; player.vy = 0;
+            ctx.platform.haptic('heavy'); playDie();
+            if (lives <= 0) { running = false; ctx.platform.fail({ reason: 'hit by barrel' }); }
+          }
+        });
+        barrels = barrels.filter(b => b.y < 310);
+        if (player.jumpT > 0 && player.onGround) player.jumpT = 0;
+
+        particles = particles.filter(p => {
+          p.x += p.vx * sec; p.y += p.vy * sec; p.vy += 200 * sec; p.life -= sec;
+          return p.life > 0;
+        });
       }
 
-      // player movement
-      const spd = 1.2;
-      const onL = LADDERS.find(l=>Math.abs(l.x-player.x)<4 && player.y>=l.y1-2 && player.y<=l.y2+2);
-      if (upDown && onL) { player.climbing = true; player.y -= spd; if (player.y<onL.y1) player.y=onL.y1; }
-      else if (downDown && onL){ player.climbing = true; player.y += spd; if (player.y>onL.y2) player.y=onL.y2; }
-      if (player.climbing && !onL) player.climbing=false;
+      // Draw
+      g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+      const grad = g.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, 'rgba(255,0,80,0.07)'); grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad; g.fillRect(0, 0, W, H);
+      g.fillStyle = 'rgba(0,0,0,0.22)'; for (let y = 0; y < H; y += 3) g.fillRect(0, y, W, 1);
 
-      if (!player.climbing){
-        if (leftDown) { player.x -= spd; player.face=-1; }
-        if (rightDown){ player.x += spd; player.face=1; }
-        // gravity
-        player.vy += 0.25;
-        player.y += player.vy;
-        // landing
-        const p = platAt(player.x, player.y);
-        if (p && player.vy>=0){
-          player.y = platY(p, player.x);
-          player.vy = 0;
-          if (!player.onGround){ player.onGround=true; player.jumpT=0; }
-        } else {
-          player.onGround=false;
-        }
-      }
+      // Platforms
+      PLATFORMS.forEach(p => {
+        const y1 = vy(p.y), y2 = vy(platY(p, p.x2));
+        g.strokeStyle = '#FF00AA'; g.lineWidth = 4;
+        g.beginPath(); g.moveTo(vx(p.x1), y1); g.lineTo(vx(p.x2), y2); g.stroke();
+        g.fillStyle = '#FFE066';
+        for (let x = p.x1 + 5; x < p.x2; x += 18) g.fillRect(vx(x) - 1.5, vy(platY(p, x)) - 1.5, 3, 3);
+      });
 
-      player.x = Math.max(5, Math.min(195, player.x));
-
-      // reached top?
-      if (player.y <= 82 && player.x > 160) { win=true; running=false; score+=500; updateHUD(); showOverlay('YOU WIN!', '#00FF88'); }
-
-      // barrels
-      barrels.forEach(b=>{
-        b.rot += b.vx*0.2;
-        b.x += b.vx;
-        // find platform under
-        const p2 = platAt(b.x, b.y);
-        if (p2){ b.y = platY(p2,b.x); b.onPlat=p2; b.vy=0;
-          // small chance to fall at ladder
-          const nearL = LADDERS.find(l=>Math.abs(l.x-b.x)<2 && l.y1===p2.y);
-          if (nearL && Math.random()<0.02){ b.y = p2.y + 2; }
-        } else {
-          b.vy += 0.25; b.y += b.vy;
-        }
-        // edge fall
-        if (b.x<3 || b.x>197){ b.vx = -b.vx; }
-        // jumped over?
-        if (player.jumpT>0 && Math.abs(player.x - b.x) < 6 && Math.abs(player.y - b.y) < 14 && player.y < b.y-2){
-          score += 100; updateHUD(); b.scored = true;
-        }
-        // collide
-        if (Math.abs(player.x - b.x) < 5 && Math.abs(player.y - b.y) < 10){
-          lives--; updateHUD();
-          addParticles(W2X(player.x), W2Y(player.y), '#FF0000', 20);
-          player.x = 30; player.y = 280; player.vy=0;
-          if (lives<=0){ running=false; showOverlay('GAME OVER','#FF2244'); }
+      // Ladders
+      LADDERS.forEach(l => {
+        const lw = vx(l.x + 4) - vx(l.x - 4);
+        const x1 = vx(l.x - 3), x2 = vx(l.x + 3);
+        const y1 = vy(l.y1), y2 = vy(l.y2);
+        g.strokeStyle = '#00FFDD'; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(x1, y1); g.lineTo(x1, y2); g.moveTo(x2, y1); g.lineTo(x2, y2); g.stroke();
+        for (let y = l.y1 + 5; y < l.y2; y += 7) {
+          const ys = vy(y); g.beginPath(); g.moveTo(x1, ys); g.lineTo(x2, ys); g.stroke();
         }
       });
-      barrels = barrels.filter(b=>b.y < 300);
 
-      if (player.jumpT>0 && player.onGround) player.jumpT=0;
+      // Kong
+      {
+        const kx = vx(20), ky = vy(80) - vy(22);
+        g.fillStyle = '#8B4513'; g.fillRect(kx, ky, vx(40), vy(22) - vy(0));
+        g.fillStyle = '#D2691E'; g.fillRect(kx + 4, ky + 4, vx(22) - vx(0), vy(12) - vy(0));
+        g.fillStyle = '#FFF'; g.fillRect(kx + 8, ky + 6, 4, 5); g.fillRect(kx + 20, ky + 6, 4, 5);
+        g.fillStyle = '#000'; g.fillRect(kx + 9, ky + 7, 2, 2); g.fillRect(kx + 21, ky + 7, 2, 2);
+      }
 
-      particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=0.2;p.life--;});
-      particles = particles.filter(p=>p.life>0);
-    }
+      // Princess
+      {
+        const px = vx(170), py = vy(75);
+        g.fillStyle = '#FF69B4'; g.fillRect(px - 6, py - 14, 12, 14);
+        g.fillStyle = '#FFCC99'; g.fillRect(px - 5, py - 22, 10, 8);
+        g.fillStyle = '#FFFF00'; g.fillRect(px - 6, py - 24, 12, 4);
+        g.fillStyle = '#FFF'; g.font = 'bold 9px "Courier New"'; g.fillText('HELP!', px - 12, py - 28);
+      }
 
-    function showOverlay(t,c){
-      overlay.innerHTML = `<div style="font-size:28px;color:${c};text-shadow:0 0 14px ${c};margin-bottom:14px;">${t}</div><div style="color:#FFF;font-size:14px;">SCORE ${score}</div><div style="color:#999;font-size:11px;margin-top:10px;">Tap RESTART to play again</div>`;
-      overlay.style.display = 'flex';
-    }
+      // Barrels
+      barrels.forEach(b => {
+        g.save(); g.translate(vx(b.x), vy(b.y) - 5);
+        g.rotate(b.rot);
+        const bw = vx(10) - vx(0), bh = vy(8) - vy(0);
+        g.fillStyle = '#CC6600'; g.fillRect(-bw / 2, -bh / 2, bw, bh);
+        g.fillStyle = '#663300'; g.fillRect(-bw / 2, -bh * 0.3, bw, 1.5); g.fillRect(-bw / 2, bh * 0.1, bw, 1.5);
+        g.restore();
+      });
 
-    function loop(){
-      drawBG();
-      PLATFORMS.forEach(drawGirder);
-      LADDERS.forEach(drawLadder);
-      drawKong();
-      drawPrincess();
-      barrels.forEach(drawBarrel);
-      drawMario();
-      drawParticles();
-      step();
-      self._raf = requestAnimationFrame(loop);
-    }
-    reset();
-    self._raf = requestAnimationFrame(loop);
+      // Mario
+      {
+        const px = vx(player.x), py = vy(player.y);
+        const w = vx(12) - vx(0), h = vy(18) - vy(0);
+        g.fillStyle = '#FF0000'; g.fillRect(px - w / 2, py - h, w, h * 0.25);
+        g.fillStyle = '#FFCC99'; g.fillRect(px - w / 2 + 1, py - h * 0.72, w - 2, h * 0.28);
+        g.fillStyle = '#000';
+        g.fillRect(px + (player.face > 0 ? 0 : -w / 2 + 1), py - h * 0.62, 2, 2);
+        g.fillStyle = '#2222FF'; g.fillRect(px - w / 2, py - h * 0.4, w, h * 0.4);
+        g.fillStyle = '#FF0000';
+        g.fillRect(px - w / 2, py - h * 0.12, w * 0.45, h * 0.12);
+        g.fillRect(px + w * 0.05, py - h * 0.12, w * 0.45, h * 0.12);
+        g.fillStyle = '#663300';
+        g.fillRect(px - w / 2, py - 2, w * 0.48, 2);
+        g.fillRect(px + w * 0.03, py - 2, w * 0.48, 2);
+      }
 
-    // --- input ---
-    // Tap zones on canvas: left half = left, right half = right, but use drag for up/down
-    let tStart = null, tDir = null;
-    self._onTouchStart = (e) => {
-      const t = e.changedTouches[0];
-      tStart = { x: t.clientX, y: t.clientY };
-      tDir = null;
-      // set initial direction based on half
-      const rect = canvas.getBoundingClientRect();
-      const rx = t.clientX - rect.left;
-      if (rx < rect.width/2) { leftDown=true; rightDown=false; tDir='L'; }
-      else { rightDown=true; leftDown=false; tDir='R'; }
-    };
-    self._onTouchMove = (e) => {
-      e.preventDefault();
-      if (!tStart) return;
-      const t = e.changedTouches[0];
-      const dy = t.clientY - tStart.y;
-      upDown = dy < -18;
-      downDown = dy > 18;
-    };
-    self._onTouchEnd = () => {
-      leftDown=rightDown=upDown=downDown=false;
-      tStart=null;
-    };
-    canvas.addEventListener('touchstart', self._onTouchStart, {passive:true});
-    canvas.addEventListener('touchmove', self._onTouchMove, {passive:false});
-    canvas.addEventListener('touchend', self._onTouchEnd);
-    canvas.addEventListener('touchcancel', self._onTouchEnd);
+      // Particles
+      particles.forEach(p => {
+        g.globalAlpha = Math.max(0, p.life / 0.5);
+        g.fillStyle = p.c; g.fillRect(p.x - 1, p.y - 1, 3, 3);
+      });
+      g.globalAlpha = 1;
 
-    self._onKeyDown = (e) => {
-      if (e.key==='ArrowLeft') leftDown=true;
-      if (e.key==='ArrowRight') rightDown=true;
-      if (e.key==='ArrowUp') upDown=true;
-      if (e.key==='ArrowDown') downDown=true;
-      if (e.key===' '||e.key==='z'||e.key==='Z') jump();
-    };
-    self._onKeyUp = (e) => {
-      if (e.key==='ArrowLeft') leftDown=false;
-      if (e.key==='ArrowRight') rightDown=false;
-      if (e.key==='ArrowUp') upDown=false;
-      if (e.key==='ArrowDown') downDown=false;
-    };
-    window.addEventListener('keydown', self._onKeyDown);
-    window.addEventListener('keyup', self._onKeyUp);
+      // HUD
+      g.fillStyle = '#FF2222'; g.font = 'bold 16px "Courier New"';
+      g.textAlign = 'left'; g.fillText('SCORE ' + score, 12, 28);
+      g.textAlign = 'right'; g.fillText('LIVES ' + '♥'.repeat(Math.max(0, lives)), W - 12, 28);
+      g.textAlign = 'left';
 
-    self._onJump = (e) => { e.preventDefault(); jump(); };
-    jumpBtn.addEventListener('click', self._onJump);
-    jumpBtn.addEventListener('touchstart', self._onJump, {passive:false});
+      // Control hints
+      if (started && running) {
+        g.fillStyle = 'rgba(255,255,255,0.25)'; g.font = '11px "Courier New"';
+        g.textAlign = 'center'; g.fillText('L/R tap = walk  swipe-up = climb  double-tap = jump', W / 2, H - SAFE - 8); g.textAlign = 'left';
+      }
 
-    self._onRestart = (e) => { e.preventDefault(); reset(); };
-    restart.addEventListener('click', self._onRestart);
-    restart.addEventListener('touchstart', self._onRestart, {passive:false});
+      if (!started) {
+        g.fillStyle = 'rgba(0,0,0,0.8)'; g.fillRect(0, 0, W, H);
+        g.fillStyle = '#FFD700'; g.font = 'bold 26px "Courier New"'; g.textAlign = 'center';
+        g.fillText('DONKEY KONG', W / 2, H / 2 - 40);
+        g.fillStyle = '#FFF'; g.font = '14px "Courier New"';
+        g.fillText('Tap L/R half = walk', W / 2, H / 2);
+        g.fillText('Swipe UP = climb ladder', W / 2, H / 2 + 24);
+        g.fillText('Double-tap = jump', W / 2, H / 2 + 48);
+        g.fillStyle = '#FFFF00'; g.font = 'bold 16px "Courier New"';
+        g.fillText('TAP TO START', W / 2, H / 2 + 85);
+        g.textAlign = 'left';
+      }
 
-    self._wrap = wrap; self._canvas=canvas; self._restart=restart; self._jumpBtn=jumpBtn;
+      if (!running && win) {
+        g.fillStyle = 'rgba(0,0,0,0.8)'; g.fillRect(0, 0, W, H);
+        g.fillStyle = '#00FF88'; g.font = 'bold 30px "Courier New"'; g.textAlign = 'center';
+        g.fillText('YOU WIN!', W / 2, H / 2 - 20);
+        g.fillStyle = '#FFFF00'; g.font = '20px "Courier New"'; g.fillText('SCORE ' + score, W / 2, H / 2 + 18);
+        g.fillStyle = '#FFF'; g.font = '16px "Courier New"'; g.fillText('TAP TO RESTART', W / 2, H / 2 + 52);
+        g.textAlign = 'left';
+      }
+
+      if (!running && !win) {
+        g.fillStyle = 'rgba(0,0,0,0.8)'; g.fillRect(0, 0, W, H);
+        g.fillStyle = '#FF2244'; g.font = 'bold 30px "Courier New"'; g.textAlign = 'center';
+        g.fillText('GAME OVER', W / 2, H / 2 - 20);
+        g.fillStyle = '#FFFF00'; g.font = '20px "Courier New"'; g.fillText('SCORE ' + score, W / 2, H / 2 + 18);
+        g.fillStyle = '#FFF'; g.font = '16px "Courier New"'; g.fillText('TAP TO RESTART', W / 2, H / 2 + 52);
+        g.textAlign = 'left';
+      }
+    });
+
+    ctx.platform.ready();
   },
 
-  destroy() {
-    cancelAnimationFrame(this._raf);
-    window.removeEventListener('resize', this._onResize);
-    window.removeEventListener('keydown', this._onKeyDown);
-    window.removeEventListener('keyup', this._onKeyUp);
-    if (this._canvas){
-      this._canvas.removeEventListener('touchstart', this._onTouchStart);
-      this._canvas.removeEventListener('touchmove', this._onTouchMove);
-      this._canvas.removeEventListener('touchend', this._onTouchEnd);
-      this._canvas.removeEventListener('touchcancel', this._onTouchEnd);
-    }
-    if (this._jumpBtn){
-      this._jumpBtn.removeEventListener('click', this._onJump);
-      this._jumpBtn.removeEventListener('touchstart', this._onJump);
-    }
-    if (this._restart){
-      this._restart.removeEventListener('click', this._onRestart);
-      this._restart.removeEventListener('touchstart', this._onRestart);
-    }
-    if (this._wrap && this._wrap.parentNode) this._wrap.parentNode.removeChild(this._wrap);
-    this._wrap=this._canvas=this._restart=this._jumpBtn=null;
-  },
+  pause() {},
+  resume() {},
 };

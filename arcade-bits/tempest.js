@@ -1,267 +1,283 @@
 // TEMPEST — Vector tunnel shooter (Plethora Bit)
-window.scrollerApp = {
-  meta: { title: 'Tempest', author: 'ArcadeBits', description: 'Drag around the rim. Shoot the tunnel crawlers.', tags: ['game'] },
-  init(container){
-    const self=this;
-    const wrap=document.createElement('div');
-    wrap.style.cssText='position:absolute;inset:0;background:#000;overflow:hidden;font-family:"Courier New",monospace;';
-    container.appendChild(wrap);
-    const canvas=document.createElement('canvas');
-    canvas.style.cssText='position:absolute;inset:0;width:100%;height:100%;touch-action:none;image-rendering:pixelated;';
-    wrap.appendChild(canvas);
-    const hud=document.createElement('div');
-    hud.style.cssText='position:absolute;top:8px;left:0;right:0;display:flex;justify-content:space-between;padding:0 14px;font:bold 14px "Courier New",monospace;letter-spacing:2px;color:#FF00FF;text-shadow:0 0 6px #FF00FF;pointer-events:none;z-index:3;';
-    hud.innerHTML='<span id="t-s">SCORE 0</span><span id="t-l">LIVES ▲▲▲</span>';
-    wrap.appendChild(hud);
-    const fireBtn=document.createElement('button');
-    fireBtn.textContent='FIRE';
-    fireBtn.style.cssText='position:absolute;bottom:14px;right:14px;width:80px;height:60px;font:bold 14px "Courier New",monospace;color:#000;background:linear-gradient(#FF66FF,#CC00CC);border:3px solid #FF00FF;border-radius:50%;box-shadow:0 0 14px #FF00FF;z-index:4;touch-action:manipulation;';
-    wrap.appendChild(fireBtn);
-    const restart=document.createElement('button');
-    restart.textContent='↺ RESTART';
-    restart.style.cssText='position:absolute;bottom:14px;left:14px;padding:8px 12px;font:bold 12px "Courier New",monospace;color:#FFF;background:#000;border:2px solid #FF00FF;border-radius:4px;box-shadow:0 0 10px #FF00FF;z-index:4;touch-action:manipulation;';
-    wrap.appendChild(restart);
-    const overlay=document.createElement('div');
-    overlay.style.cssText='position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:rgba(0,0,0,0.8);z-index:2;text-align:center;font-weight:bold;letter-spacing:3px;';
-    wrap.appendChild(overlay);
+window.plethoraBit = {
+  meta: {
+    title: 'Tempest',
+    author: 'plethora',
+    description: 'Drag around the rim to aim. Tap to fire.',
+    tags: ['game'],
+    permissions: [],
+  },
 
-    const ctx=canvas.getContext('2d');
-    const dpr=window.devicePixelRatio||1;
-    let W,H;
-    const LANES=16;
-    let cx,cy, R, rInner;
-    let playerLane, enemies, bullets, particles, score, lives, running, tick, spawnT;
+  async init(ctx) {
+    const W = ctx.width, H = ctx.height;
+    const canvas = ctx.createCanvas2D();
+    const g = canvas.getContext('2d');
 
-    function reset(){
-      resize();
-      playerLane=0; enemies=[]; bullets=[]; particles=[]; score=0; lives=3; running=true; tick=0; spawnT=0;
-      updateHUD(); overlay.style.display='none';
+    let audioCtx = null;
+    function ensureAudio() {
+      if (!audioCtx) audioCtx = new AudioContext();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
     }
-    function updateHUD(){
-      hud.querySelector('#t-s').textContent='SCORE '+score;
-      hud.querySelector('#t-l').textContent='LIVES '+'▲'.repeat(Math.max(0,lives));
+    function playTone(freq, dur, type = 'square', vol = 0.2) {
+      if (!audioCtx) return;
+      const o = audioCtx.createOscillator(), gain = audioCtx.createGain();
+      o.connect(gain); gain.connect(audioCtx.destination);
+      o.type = type; o.frequency.value = freq;
+      gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+      o.start(); o.stop(audioCtx.currentTime + dur);
     }
-    function resize(){
-      const r=wrap.getBoundingClientRect(); W=r.width; H=r.height;
-      canvas.width=W*dpr; canvas.height=H*dpr;
-      canvas.style.width=W+'px'; canvas.style.height=H+'px';
-      ctx.setTransform(dpr,0,0,dpr,0,0);
-      cx=W/2; cy=H/2; R=Math.min(W,H)*0.42; rInner=R*0.15;
+    function playShoot() { playTone(1000, 0.07, 'square', 0.18); }
+    function playExplode() {
+      if (!audioCtx) return;
+      const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.18, audioCtx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+      const src = audioCtx.createBufferSource(), gain = audioCtx.createGain();
+      src.buffer = buf; src.connect(gain); gain.connect(audioCtx.destination);
+      gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.18);
+      src.start();
     }
-    resize();
-    self._onResize=resize; window.addEventListener('resize', self._onResize);
+    function playScore() { playTone(660, 0.1, 'sine', 0.2); }
+    function playGameOver() { [350, 280, 220, 160].forEach((f, i) => setTimeout(() => playTone(f, 0.2, 'sawtooth', 0.3), i * 120)); }
 
-    function laneAngle(i){ return (i/LANES)*Math.PI*2 - Math.PI/2; }
-    function posOnRim(lane, t){
-      // t: 1 = at rim (player); 0 = at center
-      const a=laneAngle(lane);
-      const r=rInner + (R-rInner)*t;
-      return [cx+Math.cos(a)*r, cy+Math.sin(a)*r];
+    const LANES = 16;
+    let cx, cy, R, rInner;
+    cx = W / 2; cy = H / 2; R = Math.min(W, H) * 0.42; rInner = R * 0.15;
+
+    let playerLane, enemies, bullets, particles, score, lives, running, tick, spawnT, started;
+    let autoFireT = 0;
+
+    function reset() {
+      playerLane = 0; enemies = []; bullets = []; particles = [];
+      score = 0; lives = 3; running = true; tick = 0; spawnT = 0; autoFireT = 0;
     }
 
-    function drawBG(){
-      ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
-      // glow center
-      const g=ctx.createRadialGradient(cx,cy,0,cx,cy,R*1.2);
-      g.addColorStop(0,'rgba(255,0,255,0.25)');
-      g.addColorStop(0.3,'rgba(60,0,90,0.15)');
-      g.addColorStop(1,'rgba(0,0,0,0)');
-      ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
-      // scanlines
-      ctx.fillStyle='rgba(0,0,0,0.22)';
-      for (let y=0;y<H;y+=3) ctx.fillRect(0,y,W,1);
+    function laneAngle(i) { return (i / LANES) * Math.PI * 2 - Math.PI / 2; }
+    function posOnRim(lane, t) {
+      const a = laneAngle(lane);
+      const r = rInner + (R - rInner) * t;
+      return [cx + Math.cos(a) * r, cy + Math.sin(a) * r];
     }
-    function drawTunnel(){
-      // draw concentric rings with lines from center radiating outward
-      ctx.strokeStyle='#8800FF';
-      ctx.lineWidth=1;
-      for (let t=0.15;t<=1;t+=0.14){
-        ctx.beginPath();
-        for (let i=0;i<=LANES;i++){
-          const [px,py]=posOnRim(i%LANES, t);
-          if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
-        }
-        ctx.closePath();
-        ctx.stroke();
-      }
-      // spokes
-      for (let i=0;i<LANES;i++){
-        const a=laneAngle(i);
-        ctx.strokeStyle = i===playerLane?'#FFFF00':'#6600AA';
-        ctx.lineWidth = i===playerLane?2:1;
-        ctx.beginPath();
-        ctx.moveTo(cx+Math.cos(a)*rInner, cy+Math.sin(a)*rInner);
-        ctx.lineTo(cx+Math.cos(a)*R, cy+Math.sin(a)*R);
-        ctx.stroke();
-      }
-      // outer rim
-      ctx.strokeStyle='#FF00FF';
-      ctx.lineWidth=2;
-      ctx.beginPath();
-      for (let i=0;i<=LANES;i++){
-        const [px,py]=posOnRim(i%LANES, 1);
-        if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
-      }
-      ctx.closePath(); ctx.stroke();
-    }
-    function drawPlayer(){
-      const a1=laneAngle(playerLane);
-      const a2=laneAngle((playerLane+1)%LANES);
-      const mid=(a1+a2)/2;
-      // player "claw" at rim between two lanes
-      const r=R;
-      const p1=[cx+Math.cos(a1)*r, cy+Math.sin(a1)*r];
-      const p2=[cx+Math.cos(a2)*r, cy+Math.sin(a2)*r];
-      const pmid=[cx+Math.cos(mid)*(r+6), cy+Math.sin(mid)*(r+6)];
-      ctx.strokeStyle='#FFFF00';
-      ctx.lineWidth=3;
-      ctx.beginPath(); ctx.moveTo(p1[0],p1[1]); ctx.lineTo(pmid[0],pmid[1]); ctx.lineTo(p2[0],p2[1]); ctx.stroke();
-      ctx.fillStyle='#FFF';
-      ctx.beginPath(); ctx.arc(pmid[0], pmid[1], 3, 0, Math.PI*2); ctx.fill();
-    }
-    function drawEnemy(e){
-      const [px,py]=posOnRim(e.lane, e.t);
-      const size = 6 + e.t*8;
-      ctx.fillStyle = e.type==='flipper'?'#FF2222':'#00FF66';
-      ctx.beginPath(); ctx.moveTo(px, py-size); ctx.lineTo(px+size, py); ctx.lineTo(px, py+size); ctx.lineTo(px-size, py); ctx.closePath(); ctx.fill();
-      ctx.strokeStyle='#FFF'; ctx.lineWidth=1; ctx.stroke();
-    }
-    function drawBullets(){
-      bullets.forEach(b=>{
-        const [px,py]=posOnRim(b.lane, b.t);
-        ctx.fillStyle='#FFFF00';
-        ctx.beginPath(); ctx.arc(px,py,4,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle='rgba(255,255,0,0.3)';
-        ctx.beginPath(); ctx.arc(px,py,8,0,Math.PI*2); ctx.fill();
-      });
-    }
-    function drawParticles(){
-      particles.forEach(p=>{ ctx.globalAlpha=p.life/p.max; ctx.fillStyle=p.c; ctx.fillRect(p.x-1,p.y-1,3,3);});
-      ctx.globalAlpha=1;
-    }
-    function boom(x,y,c){ for(let i=0;i<18;i++) particles.push({x,y,vx:(Math.random()-0.5)*5,vy:(Math.random()-0.5)*5,c,life:22,max:22});}
 
-    function fire(){
+    function fire() {
       if (!running) return;
-      bullets.push({lane:playerLane, t:1});
+      bullets.push({ lane: playerLane, t: 1 });
+      playShoot();
     }
 
-    function step(){
-      if (!running) return;
-      tick++;
-      spawnT++;
-      if (spawnT>40){ spawnT=0; enemies.push({lane:(Math.random()*LANES)|0, t:0.1, type:Math.random()<0.7?'flipper':'spiker', flip:0}); }
-      enemies.forEach(e=>{
-        e.t += 0.006;
-        // flippers occasionally hop to adjacent lane
-        if (e.type==='flipper' && Math.random()<0.01){
-          e.lane = (e.lane + (Math.random()<0.5?1:-1) + LANES)%LANES;
-        }
-      });
-      // bullets move toward center then outward? In tempest bullets travel outward from center to rim (opposite enemies). We'll do inward (player shoots into tunnel, from t=1 to t=0).
-      bullets.forEach(b=> b.t -= 0.04);
-      bullets = bullets.filter(b=> b.t>0);
+    function boom(x, y, c) {
+      for (let i = 0; i < 16; i++) particles.push({ x, y, vx: (Math.random() - 0.5) * 200, vy: (Math.random() - 0.5) * 200, c, life: 0.5 });
+    }
 
-      // collisions
-      for (let i=enemies.length-1;i>=0;i--){
-        const e=enemies[i];
-        for (let j=bullets.length-1;j>=0;j--){
-          const b=bullets[j];
-          if (b.lane===e.lane && Math.abs(b.t - e.t)<0.06){
-            bullets.splice(j,1); enemies.splice(i,1);
-            const [px,py]=posOnRim(e.lane, e.t);
-            boom(px,py, e.type==='flipper'?'#FF2222':'#00FF66');
-            score += e.type==='flipper'?50:100; updateHUD();
-            break;
-          }
-        }
-      }
-      // enemy reaches rim?
-      enemies.forEach((e,i)=>{
-        if (e.t>=1){
-          if (e.lane===playerLane || e.lane===(playerLane+1)%LANES){
-            lives--; updateHUD();
-            const [px,py]=posOnRim(e.lane,1);
-            boom(px,py,'#FFFF00');
-            enemies.splice(i,1);
-            if (lives<=0){ running=false; showOverlay('GAME OVER','#FF2244'); }
-          } else {
-            enemies.splice(i,1);
-          }
-        }
-      });
+    function setLaneFromPoint(px, py) {
+      const dx = px - cx, dy = py - cy;
+      const a = Math.atan2(dy, dx) + Math.PI / 2;
+      playerLane = Math.floor(((a % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) / (Math.PI * 2) * LANES);
+    }
 
-      particles.forEach(p=>{ p.x+=p.vx; p.y+=p.vy; p.life--;});
-      particles = particles.filter(p=>p.life>0);
-    }
-    function showOverlay(t,c){
-      overlay.innerHTML=`<div style="font-size:28px;color:${c};text-shadow:0 0 12px ${c};margin-bottom:14px;">${t}</div><div style="color:#FFF;font-size:14px;">SCORE ${score}</div><div style="color:#999;font-size:11px;margin-top:10px;">Tap RESTART</div>`;
-      overlay.style.display='flex';
-    }
-    function loop(){
-      drawBG(); drawTunnel(); enemies.forEach(drawEnemy); drawBullets(); drawPlayer(); drawParticles(); step();
-      self._raf=requestAnimationFrame(loop);
-    }
+    ctx.listen(canvas, 'touchstart', (e) => {
+      e.preventDefault();
+      ensureAudio();
+      if (!started) { started = true; ctx.platform.start(); reset(); return; }
+      if (!running) { reset(); started = true; return; }
+      const t = e.changedTouches[0];
+      setLaneFromPoint(t.clientX, t.clientY);
+      fire();
+    }, { passive: false });
+
+    ctx.listen(canvas, 'touchmove', (e) => {
+      e.preventDefault();
+      const t = e.changedTouches[0];
+      setLaneFromPoint(t.clientX, t.clientY);
+    }, { passive: false });
+
     reset();
-    self._raf=requestAnimationFrame(loop);
 
-    function setLaneFromPoint(px,py){
-      const dx=px-cx, dy=py-cy;
-      const a=Math.atan2(dy,dx) + Math.PI/2;
-      let lane=Math.floor(((a % (Math.PI*2)) + Math.PI*2) % (Math.PI*2) / (Math.PI*2) * LANES);
-      playerLane = lane;
-    }
+    ctx.raf((dt) => {
+      const sec = dt / 1000;
+      tick++;
 
-    self._onTouchStart=(e)=>{ const t=e.changedTouches[0]; const r=canvas.getBoundingClientRect(); setLaneFromPoint(t.clientX-r.left, t.clientY-r.top); fire(); };
-    self._onTouchMove=(e)=>{ e.preventDefault(); const t=e.changedTouches[0]; const r=canvas.getBoundingClientRect(); setLaneFromPoint(t.clientX-r.left, t.clientY-r.top); };
-    canvas.addEventListener('touchstart', self._onTouchStart,{passive:true});
-    canvas.addEventListener('touchmove', self._onTouchMove,{passive:false});
+      if (running && started) {
+        // Spawn enemies
+        spawnT += dt;
+        if (spawnT > Math.max(600, 2000 - score * 0.5)) {
+          spawnT = 0;
+          enemies.push({ lane: (Math.random() * LANES) | 0, t: 0.05, type: Math.random() < 0.7 ? 'flipper' : 'spiker', cool: 80 });
+        }
 
-    self._onMouseMove=(e)=>{ const r=canvas.getBoundingClientRect(); setLaneFromPoint(e.clientX-r.left, e.clientY-r.top); };
-    self._onMouseDown=()=>fire();
-    canvas.addEventListener('mousemove', self._onMouseMove);
-    canvas.addEventListener('mousedown', self._onMouseDown);
+        enemies.forEach(e => {
+          e.t += 0.004 * (60 * sec);
+          if (e.type === 'flipper' && Math.random() < 0.008) {
+            e.lane = (e.lane + (Math.random() < 0.5 ? 1 : -1) + LANES) % LANES;
+          }
+          e.cool -= dt;
+          if (e.cool <= 0 && e.t > 0.3) {
+            // enemy fire is just visual — spikes
+            e.cool = 2000 + Math.random() * 2000;
+          }
+        });
 
-    self._onKey=(e)=>{
-      if (e.key==='ArrowLeft') playerLane=(playerLane-1+LANES)%LANES;
-      if (e.key==='ArrowRight') playerLane=(playerLane+1)%LANES;
-      if (e.key===' ') fire();
-    };
-    window.addEventListener('keydown', self._onKey);
+        // Bullets move inward (t decreasing)
+        bullets.forEach(b => b.t -= 0.07 * (60 * sec));
+        bullets = bullets.filter(b => b.t > 0);
 
-    self._onFire=(e)=>{e.preventDefault(); fire();};
-    fireBtn.addEventListener('click', self._onFire);
-    fireBtn.addEventListener('touchstart', self._onFire,{passive:false});
+        // Collisions: bullet vs enemy
+        for (let i = enemies.length - 1; i >= 0; i--) {
+          const e = enemies[i];
+          for (let j = bullets.length - 1; j >= 0; j--) {
+            const b = bullets[j];
+            if (b.lane === e.lane && Math.abs(b.t - e.t) < 0.08) {
+              bullets.splice(j, 1); enemies.splice(i, 1);
+              const [px, py] = posOnRim(e.lane, e.t);
+              boom(px, py, e.type === 'flipper' ? '#FF2222' : '#00FF66');
+              score += e.type === 'flipper' ? 50 : 100;
+              ctx.platform.setScore(score);
+              playExplode(); playScore();
+              break;
+            }
+          }
+        }
 
-    self._onRestart=(e)=>{e.preventDefault(); reset();};
-    restart.addEventListener('click', self._onRestart);
-    restart.addEventListener('touchstart', self._onRestart,{passive:false});
+        // Enemy reaches rim
+        for (let i = enemies.length - 1; i >= 0; i--) {
+          const e = enemies[i];
+          if (e.t >= 1) {
+            if (e.lane === playerLane || e.lane === (playerLane + 1) % LANES) {
+              const [px, py] = posOnRim(e.lane, 1);
+              boom(px, py, '#FFFF00');
+              lives--; ctx.platform.haptic('heavy');
+              playGameOver();
+              enemies.splice(i, 1);
+              if (lives <= 0) { running = false; ctx.platform.fail({ reason: 'enemy reached rim' }); }
+            } else {
+              enemies.splice(i, 1);
+            }
+          }
+        }
 
-    // auto-fire on drag periodically
-    self._autoFire = setInterval(()=>{ if (running && tick%1===0) {/* noop - user needs to tap */} }, 120);
+        // Auto-fire while touching
+        autoFireT -= dt;
+        if (autoFireT <= 0 && running) { fire(); autoFireT = 250; }
 
-    self._wrap=wrap; self._canvas=canvas; self._restart=restart; self._fireBtn=fireBtn;
+        particles = particles.filter(p => {
+          p.x += p.vx * sec; p.y += p.vy * sec; p.life -= sec;
+          return p.life > 0;
+        });
+      }
+
+      // Draw
+      g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+
+      // Glow center
+      const grad = g.createRadialGradient(cx, cy, 0, cx, cy, R * 1.2);
+      grad.addColorStop(0, 'rgba(255,0,255,0.2)');
+      grad.addColorStop(0.3, 'rgba(60,0,90,0.12)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad; g.fillRect(0, 0, W, H);
+      g.fillStyle = 'rgba(0,0,0,0.18)'; for (let y = 0; y < H; y += 3) g.fillRect(0, y, W, 1);
+
+      // Tunnel rings
+      g.strokeStyle = '#8800FF'; g.lineWidth = 1;
+      for (let t = 0.15; t <= 1; t += 0.14) {
+        g.beginPath();
+        for (let i = 0; i <= LANES; i++) {
+          const [px, py] = posOnRim(i % LANES, t);
+          if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+        }
+        g.closePath(); g.stroke();
+      }
+
+      // Spokes
+      for (let i = 0; i < LANES; i++) {
+        const a = laneAngle(i);
+        g.strokeStyle = i === playerLane ? '#FFFF00' : '#6600AA';
+        g.lineWidth = i === playerLane ? 2 : 1;
+        g.beginPath();
+        g.moveTo(cx + Math.cos(a) * rInner, cy + Math.sin(a) * rInner);
+        g.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+        g.stroke();
+      }
+
+      // Outer rim
+      g.strokeStyle = '#FF00FF'; g.lineWidth = 2;
+      g.beginPath();
+      for (let i = 0; i <= LANES; i++) {
+        const [px, py] = posOnRim(i % LANES, 1);
+        if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+      }
+      g.closePath(); g.stroke();
+
+      // Enemies
+      enemies.forEach(e => {
+        const [px, py] = posOnRim(e.lane, e.t);
+        const sz = 5 + e.t * 9;
+        g.fillStyle = e.type === 'flipper' ? '#FF2222' : '#00FF66';
+        g.beginPath();
+        g.moveTo(px, py - sz); g.lineTo(px + sz, py); g.lineTo(px, py + sz); g.lineTo(px - sz, py);
+        g.closePath(); g.fill();
+        g.strokeStyle = '#FFF'; g.lineWidth = 1; g.stroke();
+      });
+
+      // Bullets
+      bullets.forEach(b => {
+        const [px, py] = posOnRim(b.lane, b.t);
+        g.fillStyle = '#FFFF00';
+        g.beginPath(); g.arc(px, py, 5, 0, Math.PI * 2); g.fill();
+        g.fillStyle = 'rgba(255,255,0,0.25)';
+        g.beginPath(); g.arc(px, py, 10, 0, Math.PI * 2); g.fill();
+      });
+
+      // Player claw
+      {
+        const a1 = laneAngle(playerLane);
+        const a2 = laneAngle((playerLane + 1) % LANES);
+        const mid = (a1 + a2) / 2;
+        const p1 = [cx + Math.cos(a1) * R, cy + Math.sin(a1) * R];
+        const p2 = [cx + Math.cos(a2) * R, cy + Math.sin(a2) * R];
+        const pmid = [cx + Math.cos(mid) * (R + 8), cy + Math.sin(mid) * (R + 8)];
+        g.strokeStyle = '#FFFF00'; g.lineWidth = 3;
+        g.beginPath(); g.moveTo(p1[0], p1[1]); g.lineTo(pmid[0], pmid[1]); g.lineTo(p2[0], p2[1]); g.stroke();
+        g.fillStyle = '#FFF'; g.beginPath(); g.arc(pmid[0], pmid[1], 4, 0, Math.PI * 2); g.fill();
+      }
+
+      // Particles
+      particles.forEach(p => {
+        g.globalAlpha = Math.max(0, p.life / 0.5);
+        g.fillStyle = p.c; g.fillRect(p.x - 1, p.y - 1, 3, 3);
+      });
+      g.globalAlpha = 1;
+
+      // HUD
+      g.fillStyle = '#FF00FF'; g.font = 'bold 16px "Courier New"';
+      g.textAlign = 'left'; g.fillText('SCORE ' + score, 12, 28);
+      g.textAlign = 'right'; g.fillText('LIVES ' + '▲'.repeat(Math.max(0, lives)), W - 12, 28);
+      g.textAlign = 'left';
+
+      if (!started) {
+        g.fillStyle = 'rgba(0,0,0,0.8)'; g.fillRect(0, 0, W, H);
+        g.fillStyle = '#FF00FF'; g.font = 'bold 28px "Courier New"'; g.textAlign = 'center';
+        g.fillText('TEMPEST', W / 2, H / 2 - 30);
+        g.fillStyle = '#FFF'; g.font = '16px "Courier New"';
+        g.fillText('DRAG around rim to aim', W / 2, H / 2 + 10);
+        g.fillText('TAP to fire', W / 2, H / 2 + 40);
+        g.textAlign = 'left';
+      }
+
+      if (!running) {
+        g.fillStyle = 'rgba(0,0,0,0.8)'; g.fillRect(0, 0, W, H);
+        g.fillStyle = '#FF2244'; g.font = 'bold 32px "Courier New"'; g.textAlign = 'center';
+        g.fillText('GAME OVER', W / 2, H / 2 - 20);
+        g.fillStyle = '#FFFF00'; g.font = '20px "Courier New"'; g.fillText('SCORE ' + score, W / 2, H / 2 + 18);
+        g.fillStyle = '#FFF'; g.font = '16px "Courier New"'; g.fillText('TAP TO RESTART', W / 2, H / 2 + 52);
+        g.textAlign = 'left';
+      }
+    });
+
+    ctx.platform.ready();
   },
-  destroy(){
-    cancelAnimationFrame(this._raf);
-    clearInterval(this._autoFire);
-    window.removeEventListener('resize', this._onResize);
-    window.removeEventListener('keydown', this._onKey);
-    if (this._canvas){
-      this._canvas.removeEventListener('touchstart', this._onTouchStart);
-      this._canvas.removeEventListener('touchmove', this._onTouchMove);
-      this._canvas.removeEventListener('mousemove', this._onMouseMove);
-      this._canvas.removeEventListener('mousedown', this._onMouseDown);
-    }
-    if (this._fireBtn){
-      this._fireBtn.removeEventListener('click', this._onFire);
-      this._fireBtn.removeEventListener('touchstart', this._onFire);
-    }
-    if (this._restart){
-      this._restart.removeEventListener('click', this._onRestart);
-      this._restart.removeEventListener('touchstart', this._onRestart);
-    }
-    if (this._wrap && this._wrap.parentNode) this._wrap.parentNode.removeChild(this._wrap);
-    this._wrap=this._canvas=this._restart=this._fireBtn=null;
-  },
+
+  pause() {},
+  resume() {},
 };

@@ -7,9 +7,13 @@
   },
   "scripts": {
     "build": "node build.js",
+    "check": "node scripts/check-package.js",
     "dev": "node build.js --watch"
   },
   "devDependencies": {
     "esbuild": "^0.20.0"
+  },
+  "dependencies": {
+    "three": "^0.176.0"
   }
 }

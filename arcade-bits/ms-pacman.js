@@ -1,368 +1,479 @@
 // MS. PAC-MAN — Alternate maze, faster ghosts, fruit bonus (Plethora Bit)
-window.scrollerApp = {
+window.plethoraBit = {
   meta: {
     title: 'Ms. Pac-Man',
-    author: 'ArcadeBits',
-    description: 'Faster ghosts, new maze, bonus fruits. Swipe to turn.',
+    author: 'plethora',
+    description: 'Faster ghosts, new maze, bonus fruits. Hold and drag to steer.',
     tags: ['game'],
+    permissions: [],
   },
-  init(container){
-    const self=this;
-    const wrap=document.createElement('div');
-    wrap.style.cssText='position:absolute;inset:0;background:#000;overflow:hidden;font-family:"Courier New",monospace;';
-    container.appendChild(wrap);
-    const canvas=document.createElement('canvas');
-    canvas.style.cssText='position:absolute;inset:0;width:100%;height:100%;touch-action:none;image-rendering:pixelated;';
-    wrap.appendChild(canvas);
-    const hud=document.createElement('div');
-    hud.style.cssText='position:absolute;top:8px;left:0;right:0;display:flex;justify-content:space-between;padding:0 14px;font:bold 14px "Courier New",monospace;letter-spacing:2px;color:#FF66CC;text-shadow:0 0 6px #FF0099;pointer-events:none;z-index:3;';
-    hud.innerHTML='<span id="mp-s">SCORE 0</span><span id="mp-l">LIVES ♥♥♥</span>';
-    wrap.appendChild(hud);
-    const restart=document.createElement('button');
-    restart.textContent='↺ RESTART';
-    restart.style.cssText='position:absolute;bottom:14px;right:14px;padding:8px 18px;font:bold 14px "Courier New",monospace;letter-spacing:3px;color:#000;background:linear-gradient(#FF88CC,#CC3388);border:3px solid #FFFF00;border-radius:4px;box-shadow:0 0 12px #FF00AA;z-index:4;touch-action:manipulation;';
-    wrap.appendChild(restart);
-    
-    // Virtual joystick lever
-    const joystick=document.createElement('div');
-    joystick.style.cssText='position:absolute;bottom:14px;left:14px;width:60px;height:60px;border:3px solid #00FF00;border-radius:50%;background:rgba(0,255,0,0.1);z-index:4;box-shadow:0 0 12px #00FF00;';
-    wrap.appendChild(joystick);
-    const stick=document.createElement('div');
-    stick.style.cssText='position:absolute;width:30px;height:30px;border-radius:50%;background:#00FF00;top:50%;left:50%;transform:translate(-50%,-50%);box-shadow:0 0 8px #00FF00;transition:transform 0.05s ease-out;';
-    joystick.appendChild(stick);
-    let joyActive=false, joyStartX=0, joyStartY=0, joyTouch=null;
-    const overlay=document.createElement('div');
-    overlay.style.cssText='position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:rgba(0,0,0,0.75);z-index:2;text-align:center;font-weight:bold;letter-spacing:3px;';
-    wrap.appendChild(overlay);
 
-    const ctx=canvas.getContext('2d');
-    const dpr=window.devicePixelRatio||1;
-    let W,H,tile,offX,offY;
+  async init(ctx) {
+    const W = ctx.width, H = ctx.height;
+    const canvas = ctx.createCanvas2D();
+    const g = canvas.getContext('2d');
+    const SAFE = ctx.safeArea.bottom;
 
-    // Different maze from Pac-Man
-    const MAP=[
+    let audioCtx = null;
+    function ensureAudio() {
+      if (!audioCtx) audioCtx = new AudioContext();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    }
+    function playTone(freq, dur, type = 'square', vol = 0.2) {
+      if (!audioCtx) return;
+      const o = audioCtx.createOscillator(), gain = audioCtx.createGain();
+      o.connect(gain); gain.connect(audioCtx.destination);
+      o.type = type; o.frequency.value = freq;
+      gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+      o.start(); o.stop(audioCtx.currentTime + dur);
+    }
+    function playDot() { playTone(440, 0.04, 'square', 0.1); }
+    function playPellet() { playTone(880, 0.15, 'sine', 0.3); }
+    function playGhostEat() { playTone(600, 0.12, 'sine', 0.25); }
+    function playFruit() { playTone(1200, 0.12, 'sine', 0.25); }
+    function playDie() { [600, 500, 400, 300, 200].forEach((f, i) => setTimeout(() => playTone(f, 0.1, 'sawtooth', 0.3), i * 80)); }
+    function playWin() { [400, 500, 600, 700, 800].forEach((f, i) => setTimeout(() => playTone(f, 0.12, 'sine', 0.25), i * 80)); }
+    function playGameOver() { [300, 240, 180].forEach((f, i) => setTimeout(() => playTone(f, 0.2, 'sawtooth', 0.3), i * 120)); }
+
+    // Ms. Pac-Man maze — different from regular Pac-Man
+    const MAP = [
       '#####################',
       '#o.......#.#.......o#',
-      '#.###.##.#.#.##.###.#',
-      '#.#...#..#.#..#...#.#',
-      '#.#.#.#.##.##.#.#.#.#',
-      '#...#.........#.....#',
-      '###.#.#######.#.###.#',
-      '   #.#...#...#.#   #',
-      '#####.##-.-##.#####.',
-      '.....#.# GGG #.#.....',
-      '#####.##---##.#####.',
-      '   #.#.......#.#   #',
-      '###.#.#######.#.###.#',
+      '#.###.##...#.##.###.#',
+      '#.#...#..###..#...#.#',
+      '#.#.#.#.........#.#.#',
+      '#...#.....#.....#...#',
+      '###.#.###.#.###.#.###',
+      '    #.#...#...#.#    ',
+      '#####.##.---.##.#####',
+      '.....#.# GGGG #.#.....',
+      '#####.##-----##.#####',
+      '    #.#.......#.#    ',
+      '###.#.#######.#.#.###',
       '#.........P.........#',
       '#.#.##.#######.##.#.#',
-      '#o#.#............#.#o',
+      '#o..#...........#..o#',
       '##.#.#.#######.#.#.##',
       '#....##.........##..#',
       '#.##.##.##.##.##.##.#',
       '#...................#',
       '#####################',
     ];
-    const ROWS=MAP.length, COLS=MAP[0].length;
-    let walls, dots, pellets, pac, ghosts, score, lives, powerT, running, win, particles, tick, fruit;
 
-    function reset(){
-      walls=[]; dots=[]; pellets=[];
-      for (let y=0;y<ROWS;y++){
-        walls[y]=[]; dots[y]=[]; pellets[y]=[];
-        for (let x=0;x<COLS;x++){
-          const c=MAP[y][x];
-          walls[y][x] = (c==='#');
-          dots[y][x] = (c==='.');
-          pellets[y][x] = (c==='o');
+    const MROWS = MAP.length, MCOLS = MAP[0].length;
+
+    const DPAD_H = 160;
+    const DPAD_Y = H - SAFE - DPAD_H;
+    const tileW = Math.floor(W / MCOLS);
+    const tileH = Math.floor((DPAD_Y - 40) / MROWS);
+    const TILE = Math.min(tileW, tileH);
+    const OX = Math.floor((W - TILE * MCOLS) / 2);
+    const OY = 40;
+
+    let dpadActive = -1;
+    const PCX = W / 2, PCY = DPAD_Y + DPAD_H / 2;
+
+    function dpadHit(tx, ty) {
+      if (ty < DPAD_Y) return -1;
+      const dx = tx - PCX, dy = ty - PCY;
+      return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 0 : 1) : (dy < 0 ? 2 : 3);
+    }
+
+    let walls, dots, pellets, pac, ghosts, score, lives, powerT, running, win, particles, tick, fruit, started;
+
+    const DIRS = [[1, 0], [-1, 0], [0, -1], [0, 1]]; // R, L, U, D
+
+    function canGo(x, y) {
+      if (y < 0 || y >= MROWS) return false;
+      if (x < 0) x += MCOLS;
+      if (x >= MCOLS) x -= MCOLS;
+      const c = MAP[y][x];
+      return c !== '#' && c !== '-';
+    }
+
+    function reset() {
+      walls = []; dots = []; pellets = [];
+      for (let y = 0; y < MROWS; y++) {
+        walls[y] = []; dots[y] = []; pellets[y] = [];
+        for (let x = 0; x < MCOLS; x++) {
+          const c = MAP[y][x];
+          walls[y][x] = (c === '#');
+          dots[y][x] = (c === '.' || c === ' ' || c === 'G' || c === 'P') ? false : (c === '.');
+          pellets[y][x] = (c === 'o');
+        }
+        // re-parse for dots carefully
+        for (let x = 0; x < MCOLS; x++) {
+          const c = MAP[y][x];
+          dots[y][x] = (c === '.');
+          pellets[y][x] = (c === 'o');
         }
       }
-      pac={x:10,y:13,px:10,py:13,dir:3,next:3,t:0,dead:false};
-      ghosts=[
-        {x:9,y:9,px:9,py:9,color:'#FF0000',t:0,dx:1,dy:0,scared:0},
-        {x:10,y:9,px:10,py:9,color:'#FFB8FF',t:0,dx:-1,dy:0,scared:0},
-        {x:11,y:9,px:11,py:9,color:'#00FFFF',t:0,dx:0,dy:-1,scared:0},
-        {x:10,y:8,px:10,py:8,color:'#FF8844',t:0,dx:0,dy:1,scared:0},
+
+      // Ms. Pac-Man starts at col 10, row 13
+      pac = { x: 10, y: 13, px: 10, py: 13, dir: 0, next: 0, t: 0, dead: false };
+
+      ghosts = [
+        { x: 9, y: 9, px: 9, py: 9, color: '#FF0000', t: 0, dx: 1, dy: 0, scared: 0 },
+        { x: 10, y: 9, px: 10, py: 9, color: '#FFB8FF', t: 0, dx: -1, dy: 0, scared: 0 },
+        { x: 11, y: 9, px: 11, py: 9, color: '#00FFFF', t: 0, dx: 0, dy: -1, scared: 0 },
+        { x: 10, y: 8, px: 10, py: 8, color: '#FF8844', t: 0, dx: 0, dy: 1, scared: 0 },
       ];
-      score=0; lives=3; powerT=0; running=true; win=false; particles=[]; tick=0;
-      fruit=null;
-      updateHUD(); overlay.style.display='none';
-    }
-    function updateHUD(){
-      hud.querySelector('#mp-s').textContent='SCORE '+score;
-      hud.querySelector('#mp-l').textContent='LIVES '+'♥'.repeat(Math.max(0,lives));
-    }
-    function resize(){
-      const r=wrap.getBoundingClientRect(); W=r.width; H=r.height;
-      canvas.width=W*dpr; canvas.height=H*dpr;
-      canvas.style.width=W+'px'; canvas.style.height=H+'px';
-      ctx.setTransform(dpr,0,0,dpr,0,0);
-      const usable=Math.min(W, H-80);
-      tile=Math.floor(usable/COLS);
-      offX=Math.floor((W-tile*COLS)/2);
-      offY=Math.floor((H-tile*ROWS)/2);
-    }
-    resize();
-    self._onResize=resize; window.addEventListener('resize', self._onResize);
 
-    function drawBG(){
-      ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
-      ctx.strokeStyle='rgba(255,0,200,0.07)'; ctx.lineWidth=1;
-      for (let x=0;x<W;x+=16){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-      for (let y=0;y<H;y+=16){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
-      ctx.fillStyle='rgba(0,0,0,0.22)';
-      for (let y=0;y<H;y+=3) ctx.fillRect(0,y,W,1);
+      score = 0; lives = 3; powerT = 0; running = true; win = false;
+      particles = []; tick = 0; fruit = null;
     }
-    function drawMaze(){
-      for (let y=0;y<ROWS;y++) for (let x=0;x<COLS;x++){
-        if (walls[y][x]){
-          ctx.fillStyle='#FF00AA';
-          ctx.fillRect(offX+x*tile, offY+y*tile, tile, tile);
-          ctx.fillStyle='#AA0066';
-          ctx.fillRect(offX+x*tile+1, offY+y*tile+1, tile-2, tile-2);
-          ctx.fillStyle='#000';
-          ctx.fillRect(offX+x*tile+3, offY+y*tile+3, tile-6, tile-6);
-        } else if (dots[y][x]){
-          ctx.fillStyle='#FFCC99';
-          ctx.fillRect(offX+x*tile+tile/2-1, offY+y*tile+tile/2-1, 2, 2);
-        } else if (pellets[y][x]){
-          const s=2+Math.sin(tick*0.2)*1.5;
-          ctx.fillStyle='#FFFF00';
-          ctx.beginPath(); ctx.arc(offX+x*tile+tile/2, offY+y*tile+tile/2, s+2, 0, Math.PI*2); ctx.fill();
-        }
-      }
-    }
-    function drawPac(){
-      const cx=offX+pac.px*tile+tile/2, cy=offY+pac.py*tile+tile/2, r=tile*0.45;
-      const m=Math.abs(Math.sin(tick*0.3))*0.5+0.05;
-      const dirRot={0:Math.PI,1:0,2:-Math.PI/2,3:Math.PI/2}[pac.dir]||0;
-      ctx.save(); ctx.translate(cx,cy); ctx.rotate(dirRot);
-      ctx.fillStyle='#FFFF00';
-      ctx.beginPath(); ctx.moveTo(0,0); ctx.arc(0,0,r,m,Math.PI*2-m); ctx.closePath(); ctx.fill();
-      // bow (Ms. signature)
-      ctx.restore();
-      // bow drawn on top
-      ctx.fillStyle='#FF0066';
-      ctx.beginPath();
-      ctx.moveTo(cx-r*0.3, cy-r); ctx.lineTo(cx-r*0.7, cy-r*1.3); ctx.lineTo(cx-r*0.5, cy-r*0.7); ctx.closePath();
-      ctx.moveTo(cx+r*0.3, cy-r); ctx.lineTo(cx+r*0.7, cy-r*1.3); ctx.lineTo(cx+r*0.5, cy-r*0.7); ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle='#FFFF00';
-      ctx.fillRect(cx-r*0.15, cy-r*0.9, r*0.3, r*0.15);
-      // lipstick
-      ctx.fillStyle='#FF0000';
-      if (pac.dir===0) ctx.fillRect(cx+r*0.3, cy, r*0.3, 2);
-      else if (pac.dir===1) ctx.fillRect(cx-r*0.6, cy, r*0.3, 2);
-    }
-    function drawGhost(g){
-      const cx=offX+g.px*tile+tile/2, cy=offY+g.py*tile+tile/2, r=tile*0.45;
-      const col = g.scared>0?(Math.floor(tick/4)%2?'#FFFFFF':'#0000FF'):g.color;
-      ctx.fillStyle=col;
-      ctx.beginPath();
-      ctx.arc(cx,cy-1,r,Math.PI,0); ctx.lineTo(cx+r,cy+r);
-      const n=4; const w=(2*r)/n;
-      for (let i=0;i<n;i++){
-        ctx.lineTo(cx+r-w*(i+0.5), cy+r-(i%2?4:0));
-        ctx.lineTo(cx+r-w*(i+1), cy+r);
-      }
-      ctx.closePath(); ctx.fill();
-      ctx.fillStyle='#FFF';
-      ctx.fillRect(cx-r*0.55, cy-r*0.3, r*0.4, r*0.5);
-      ctx.fillRect(cx+r*0.15, cy-r*0.3, r*0.4, r*0.5);
-      ctx.fillStyle='#0033FF';
-      ctx.fillRect(cx-r*0.45,cy-r*0.15,r*0.18,r*0.22);
-      ctx.fillRect(cx+r*0.25,cy-r*0.15,r*0.18,r*0.22);
-    }
-    function drawFruit(){
-      if (!fruit) return;
-      const cx=offX+fruit.x*tile+tile/2, cy=offY+fruit.y*tile+tile/2;
-      ctx.fillStyle='#FF0000';
-      ctx.beginPath(); ctx.arc(cx,cy,tile*0.35,0,Math.PI*2); ctx.fill();
-      ctx.fillStyle='#008800';
-      ctx.fillRect(cx-1, cy-tile*0.5, 2, 4);
-      ctx.fillStyle='#00FF00';
-      ctx.fillRect(cx+1, cy-tile*0.55, 3, 2);
-    }
-    function drawParticles(){
-      particles.forEach(p=>{ ctx.globalAlpha=p.life/p.max; ctx.fillStyle=p.c; ctx.fillRect(p.x-1,p.y-1,3,3);});
-      ctx.globalAlpha=1;
-    }
-    function addParticles(x,y,c,n=10){ for(let i=0;i<n;i++) particles.push({x,y,vx:(Math.random()-0.5)*3,vy:(Math.random()-0.5)*3,c,life:20,max:20});}
 
-    const DIRS=[[1,0],[-1,0],[0,-1],[0,1]];
-    function canGo(x,y){
-      if (y<0||y>=ROWS) return false;
-      if (x<0) x+=COLS; if (x>=COLS) x-=COLS;
-      return !walls[y][x];
-    }
-    function step(){
-      if (!running) return;
-      tick++;
-      if (powerT>0) powerT--;
-      particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=0.1;p.life--;});
-      particles=particles.filter(p=>p.life>0);
+    ctx.listen(canvas, 'touchstart', (e) => {
+      e.preventDefault();
+      ensureAudio();
+      if (!started) { started = true; ctx.platform.start(); reset(); return; }
+      if (!running) { reset(); return; }
+      const t = e.changedTouches[0];
+      const d = dpadHit(t.clientX, t.clientY);
+      if (d >= 0) { pac.next = d; dpadActive = d; ctx.platform.haptic('light'); }
+    }, { passive: false });
 
-      pac.t++;
-      if (pac.t >= 5){ // Ms. Pac faster than Pac-Man
-        pac.t=0;
-        const [nx,ny]=DIRS[pac.next];
-        if (canGo(pac.x+nx,pac.y+ny)) pac.dir=pac.next;
-        const [dx,dy]=DIRS[pac.dir];
-        if (canGo(pac.x+dx,pac.y+dy)){
-          pac.x+=dx; pac.y+=dy;
-          if (pac.x<0) pac.x=COLS-1;
-          if (pac.x>=COLS) pac.x=0;
-          if (dots[pac.y][pac.x]){ dots[pac.y][pac.x]=false; score+=10; updateHUD(); }
-          if (pellets[pac.y][pac.x]){
-            pellets[pac.y][pac.x]=false; score+=50; powerT=180;
-            ghosts.forEach(g=>g.scared=180);
-            addParticles(offX+pac.x*tile+tile/2, offY+pac.y*tile+tile/2, '#FF66CC', 18);
-            updateHUD();
-          }
-          if (fruit && pac.x===fruit.x && pac.y===fruit.y){
-            score += 200; fruit=null; updateHUD();
-            addParticles(offX+pac.x*tile+tile/2, offY+pac.y*tile+tile/2, '#FF0000', 20);
-          }
-          let any=false;
-          for (let yy=0;yy<ROWS&&!any;yy++) for (let xx=0;xx<COLS&&!any;xx++) if (dots[yy][xx]||pellets[yy][xx]) any=true;
-          if (!any){ win=true; running=false; showOverlay('YOU WIN!','#FFFF00'); }
-        }
-      }
-      pac.px += (pac.x-pac.px)*0.3;
-      pac.py += (pac.y-pac.py)*0.3;
+    ctx.listen(canvas, 'touchmove', (e) => {
+      e.preventDefault();
+      const t = e.changedTouches[0];
+      const d = dpadHit(t.clientX, t.clientY);
+      if (d >= 0 && d !== dpadActive) { pac.next = d; dpadActive = d; ctx.platform.haptic('light'); }
+    }, { passive: false });
 
-      // spawn fruit occasionally
-      if (!fruit && Math.random()<0.004){
-        // find random non-wall non-dot cell
-        for (let tries=0;tries<20;tries++){
-          const fx=(Math.random()*COLS)|0, fy=(Math.random()*ROWS)|0;
-          if (!walls[fy][fx]){ fruit={x:fx,y:fy}; break; }
-        }
-      }
+    ctx.listen(canvas, 'touchend', (e) => {
+      e.preventDefault();
+      dpadActive = -1;
+    }, { passive: false });
 
-      ghosts.forEach(g=>{
-        g.t++;
-        if (g.scared>0) g.scared--;
-        if (g.t>=8){ // faster than Pac-Man ghosts
-          g.t=0;
-          const opts = DIRS.filter(([dx,dy])=>canGo(g.x+dx,g.y+dy) && !(dx===-g.dx && dy===-g.dy));
-          const choices = opts.length?opts:DIRS.filter(([dx,dy])=>canGo(g.x+dx,g.y+dy));
-          if (choices.length){
-            let best=choices[0], sc=Infinity;
-            choices.forEach(c=>{
-              const d=Math.hypot(g.x+c[0]-pac.x,g.y+c[1]-pac.y);
-              const s=g.scared>0?-d:d;
-              if (s<sc){sc=s;best=c;}
-            });
-            if (Math.random()<0.2) best=choices[(Math.random()*choices.length)|0];
-            g.dx=best[0]; g.dy=best[1];
-            g.x+=g.dx; g.y+=g.dy;
-            if (g.x<0) g.x=COLS-1;
-            if (g.x>=COLS) g.x=0;
-          }
-        }
-        g.px += (g.x-g.px)*0.3;
-        g.py += (g.y-g.py)*0.3;
-        if (Math.abs(g.px-pac.px)<0.5 && Math.abs(g.py-pac.py)<0.5){
-          if (g.scared>0){
-            score+=200; updateHUD();
-            addParticles(offX+g.px*tile+tile/2, offY+g.py*tile+tile/2, g.color, 20);
-            g.x=10; g.y=9; g.scared=0;
-          } else {
-            lives--; updateHUD();
-            addParticles(offX+pac.px*tile+tile/2, offY+pac.py*tile+tile/2,'#FFFF00',30);
-            pac.x=10; pac.y=13; pac.px=10; pac.py=13;
-            if (lives<=0){ running=false; showOverlay('GAME OVER','#FF2244'); }
-          }
-        }
-      });
-    }
-    function showOverlay(t,c){
-      overlay.innerHTML=`<div style="font-size:28px;color:${c};text-shadow:0 0 12px ${c};margin-bottom:14px;">${t}</div><div style="color:#FFF;font-size:14px;">SCORE ${score}</div><div style="color:#999;font-size:11px;margin-top:10px;">Tap RESTART</div>`;
-      overlay.style.display='flex';
-    }
-    function loop(){
-      drawBG(); drawMaze(); drawFruit(); ghosts.forEach(drawGhost); drawPac(); drawParticles(); step();
-      self._raf=requestAnimationFrame(loop);
-    }
     reset();
-    self._raf=requestAnimationFrame(loop);
 
-    // Joystick touch controls
-    self._onJoyStart=(e)=>{
-      const t=e.changedTouches[0];
-      const rect=joystick.getBoundingClientRect();
-      joyStartX=t.clientX-rect.left-30;
-      joyStartY=t.clientY-rect.top-30;
-      joyActive=true;
-      joyTouch=t.identifier;
-      e.preventDefault();
-    };
-    self._onJoyMove=(e)=>{
-      if (!joyActive) return;
-      e.preventDefault();
-      for (let i=0; i<e.changedTouches.length; i++){
-        if (e.changedTouches[i].identifier===joyTouch){
-          const t=e.changedTouches[i];
-          const rect=joystick.getBoundingClientRect();
-          const x=t.clientX-rect.left-30;
-          const y=t.clientY-rect.top-30;
-          const dist=Math.hypot(x,y);
-          const maxDist=30;
-          let nx=x, ny=y;
-          if (dist>maxDist){ nx=(x/dist)*maxDist; ny=(y/dist)*maxDist; }
-          stick.style.transform=`translate(calc(-50% + ${nx}px), calc(-50% + ${ny}px))`;
-          const angle=Math.atan2(ny,nx);
-          if (Math.abs(nx)>Math.abs(ny)){
-            pac.next=nx>0?0:1;
-          } else {
-            pac.next=ny<0?2:3;
+    function addParticles(x, y, c, n = 10) {
+      for (let i = 0; i < n; i++) {
+        particles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 120,
+          vy: (Math.random() - 0.5) * 120,
+          c, life: 0.5
+        });
+      }
+    }
+
+    ctx.raf((dt) => {
+      const sec = dt / 1000;
+      tick++;
+
+      if (running && started) {
+        if (powerT > 0) powerT -= dt;
+
+        // Particles
+        particles = particles.filter(p => {
+          p.x += p.vx * sec; p.y += p.vy * sec;
+          p.vy += 100 * sec;
+          p.life -= sec;
+          return p.life > 0;
+        });
+
+        // Ms. Pac-Man movement — slightly faster than standard (t >= 4 instead of 5)
+        pac.t++;
+        if (pac.t >= 10) {
+          pac.t = 0;
+          const [nx, ny] = DIRS[pac.next];
+          if (canGo(pac.x + nx, pac.y + ny)) pac.dir = pac.next;
+          const [dx, dy] = DIRS[pac.dir];
+          if (canGo(pac.x + dx, pac.y + dy)) {
+            pac.x += dx; pac.y += dy;
+            if (pac.x < 0) pac.x = MCOLS - 1;
+            if (pac.x >= MCOLS) pac.x = 0;
+
+            if (dots[pac.y] && dots[pac.y][pac.x]) {
+              dots[pac.y][pac.x] = false;
+              score += 10;
+              ctx.platform.setScore(score);
+              playDot();
+            }
+            if (pellets[pac.y] && pellets[pac.y][pac.x]) {
+              pellets[pac.y][pac.x] = false;
+              score += 50;
+              powerT = 7000; // Ms. Pac-Man power lasts slightly less
+              ghosts.forEach(gh => gh.scared = 200);
+              addParticles(OX + pac.x * TILE + TILE / 2, OY + pac.y * TILE + TILE / 2, '#FF66CC', 16);
+              ctx.platform.setScore(score);
+              playPellet();
+            }
+            if (fruit && pac.x === fruit.x && pac.y === fruit.y) {
+              score += fruit.value;
+              addParticles(OX + pac.x * TILE + TILE / 2, OY + pac.y * TILE + TILE / 2, '#FF0000', 20);
+              ctx.platform.setScore(score);
+              playFruit();
+              fruit = null;
+            }
+
+            // Check win
+            let anyLeft = false;
+            for (let y = 0; y < MROWS && !anyLeft; y++)
+              for (let x = 0; x < MCOLS && !anyLeft; x++)
+                if ((dots[y] && dots[y][x]) || (pellets[y] && pellets[y][x])) anyLeft = true;
+            if (!anyLeft) { win = true; running = false; ctx.platform.complete({ score }); playWin(); }
           }
-          break;
+        }
+
+        pac.px += (pac.x - pac.px) * 0.35;
+        pac.py += (pac.y - pac.py) * 0.35;
+
+        // Spawn fruit occasionally
+        if (!fruit && Math.random() < 0.003) {
+          const fruits = [
+            { value: 100, color: '#FF0000', shape: 'cherry' },
+            { value: 200, color: '#FF6600', shape: 'orange' },
+            { value: 300, color: '#FF00FF', shape: 'pretzel' },
+          ];
+          for (let tries = 0; tries < 20; tries++) {
+            const fx = (Math.random() * MCOLS) | 0;
+            const fy = (Math.random() * MROWS) | 0;
+            if (MAP[fy] && !walls[fy][fx] && !dots[fy][fx]) {
+              const pick = fruits[(Math.random() * fruits.length) | 0];
+              fruit = { x: fx, y: fy, ...pick, life: 8000 };
+              break;
+            }
+          }
+        }
+        if (fruit) {
+          fruit.life -= dt;
+          if (fruit.life <= 0) fruit = null;
+        }
+
+        // Ghosts — faster than standard Pac-Man (t >= 6 instead of 8)
+        ghosts.forEach(gh => {
+          gh.t++;
+          if (gh.scared > 0) gh.scared--;
+          if (gh.t >= 14) {
+            gh.t = 0;
+            const opts = DIRS.filter(([dx, dy]) =>
+              canGo(gh.x + dx, gh.y + dy) && !(dx === -gh.dx && dy === -gh.dy)
+            );
+            const choices = opts.length ? opts : DIRS.filter(([dx, dy]) => canGo(gh.x + dx, gh.y + dy));
+            if (choices.length) {
+              let best = choices[0], bestScore = Infinity;
+              choices.forEach(c => {
+                const d = Math.hypot(gh.x + c[0] - pac.x, gh.y + c[1] - pac.y);
+                const s = gh.scared > 0 ? -d : d;
+                if (s < bestScore) { bestScore = s; best = c; }
+              });
+              // 25% random to make them less deterministic
+              if (Math.random() < 0.25) best = choices[(Math.random() * choices.length) | 0];
+              gh.dx = best[0]; gh.dy = best[1];
+              gh.x += gh.dx; gh.y += gh.dy;
+              if (gh.x < 0) gh.x = MCOLS - 1;
+              if (gh.x >= MCOLS) gh.x = 0;
+            }
+          }
+          gh.px += (gh.x - gh.px) * 0.35;
+          gh.py += (gh.y - gh.py) * 0.35;
+
+          // Collision with Ms. Pac-Man
+          if (Math.abs(gh.px - pac.px) < 0.5 && Math.abs(gh.py - pac.py) < 0.5) {
+            if (gh.scared > 0) {
+              score += 200;
+              ctx.platform.setScore(score);
+              addParticles(OX + gh.px * TILE + TILE / 2, OY + gh.py * TILE + TILE / 2, gh.color, 20);
+              gh.x = 10; gh.y = 9; gh.scared = 0;
+              playGhostEat();
+            } else {
+              lives--;
+              addParticles(OX + pac.px * TILE + TILE / 2, OY + pac.py * TILE + TILE / 2, '#FFFF00', 30);
+              ctx.platform.haptic('heavy');
+              pac.x = 10; pac.y = 13; pac.px = 10; pac.py = 13;
+              playDie();
+              if (lives <= 0) {
+                running = false;
+                ctx.platform.fail({ reason: 'caught by ghost' });
+                playGameOver();
+              }
+            }
+          }
+        });
+      }
+
+      // Draw
+      g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+
+      // Grid tint
+      g.strokeStyle = 'rgba(255,0,150,0.06)'; g.lineWidth = 1;
+      for (let x = 0; x < W; x += 16) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+      for (let y = 0; y < H; y += 16) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+
+      // Maze
+      for (let y = 0; y < MROWS; y++) {
+        for (let x = 0; x < MCOLS; x++) {
+          if (!walls[y] || walls[y][x] === undefined) continue;
+          if (walls[y][x]) {
+            g.fillStyle = '#FF00AA';
+            g.fillRect(OX + x * TILE, OY + y * TILE, TILE, TILE);
+            g.fillStyle = '#AA0066';
+            g.fillRect(OX + x * TILE + 1, OY + y * TILE + 1, TILE - 2, TILE - 2);
+            g.fillStyle = '#000';
+            g.fillRect(OX + x * TILE + 3, OY + y * TILE + 3, TILE - 6, TILE - 6);
+          } else if (dots[y] && dots[y][x]) {
+            g.fillStyle = '#FFCC99';
+            g.fillRect(OX + x * TILE + TILE / 2 - 1, OY + y * TILE + TILE / 2 - 1, 2, 2);
+          } else if (pellets[y] && pellets[y][x]) {
+            const s = 2 + Math.sin(tick * 0.2) * 1.5;
+            g.fillStyle = '#FFFF00';
+            g.beginPath(); g.arc(OX + x * TILE + TILE / 2, OY + y * TILE + TILE / 2, s + 2, 0, Math.PI * 2); g.fill();
+          }
         }
       }
-    };
-    self._onJoyEnd=(e)=>{
-      for (let i=0; i<e.changedTouches.length; i++){
-        if (e.changedTouches[i].identifier===joyTouch){
-          joyActive=false;
-          stick.style.transform='translate(-50%, -50%)';
-          break;
-        }
+
+      // Fruit
+      if (fruit) {
+        const fx = OX + fruit.x * TILE + TILE / 2;
+        const fy = OY + fruit.y * TILE + TILE / 2;
+        g.fillStyle = fruit.color;
+        g.beginPath(); g.arc(fx, fy, TILE * 0.35, 0, Math.PI * 2); g.fill();
+        g.fillStyle = '#008800';
+        g.fillRect(fx - 1, fy - TILE * 0.5, 2, 4);
       }
-    };
-    joystick.addEventListener('touchstart', self._onJoyStart, {passive:false});
-    joystick.addEventListener('touchmove', self._onJoyMove, {passive:false});
-    joystick.addEventListener('touchend', self._onJoyEnd, {passive:true});
-    joystick.addEventListener('touchcancel', self._onJoyEnd, {passive:true});
 
-    self._onKey=(e)=>{
-      if (e.key==='ArrowRight') pac.next=0;
-      if (e.key==='ArrowLeft') pac.next=1;
-      if (e.key==='ArrowUp') pac.next=2;
-      if (e.key==='ArrowDown') pac.next=3;
-    };
-    window.addEventListener('keydown', self._onKey);
+      // Ghosts
+      ghosts.forEach(gh => {
+        const cx = OX + gh.px * TILE + TILE / 2;
+        const cy = OY + gh.py * TILE + TILE / 2;
+        const r = TILE * 0.45;
+        const col = gh.scared > 0 ? (Math.floor(tick / 4) % 2 ? '#FFF' : '#0000FF') : gh.color;
+        g.fillStyle = col;
+        g.beginPath();
+        g.arc(cx, cy - 1, r, Math.PI, 0);
+        g.lineTo(cx + r, cy + r);
+        const n = 4, w = (2 * r) / n;
+        for (let i = 0; i < n; i++) {
+          g.lineTo(cx + r - w * (i + 0.5), cy + r - (i % 2 ? 4 : 0));
+          g.lineTo(cx + r - w * (i + 1), cy + r);
+        }
+        g.closePath(); g.fill();
+        g.fillStyle = '#FFF';
+        g.fillRect(cx - r * 0.55, cy - r * 0.3, r * 0.4, r * 0.5);
+        g.fillRect(cx + r * 0.15, cy - r * 0.3, r * 0.4, r * 0.5);
+        g.fillStyle = '#0033FF';
+        g.fillRect(cx - r * 0.45, cy - r * 0.15, r * 0.18, r * 0.22);
+        g.fillRect(cx + r * 0.25, cy - r * 0.15, r * 0.18, r * 0.22);
+      });
 
-    self._onRestart=(e)=>{e.preventDefault(); reset();};
-    restart.addEventListener('click', self._onRestart);
-    restart.addEventListener('touchstart', self._onRestart, {passive:false});
+      // Ms. Pac-Man
+      {
+        const cx = OX + pac.px * TILE + TILE / 2;
+        const cy = OY + pac.py * TILE + TILE / 2;
+        const r = TILE * 0.45;
+        const mouthOpen = Math.abs(Math.sin(tick * 0.3)) * 0.5 + 0.05;
+        const dirRot = [0, Math.PI, -Math.PI / 2, Math.PI / 2][pac.dir] || 0;
+        g.save();
+        g.translate(cx, cy);
+        g.rotate(dirRot);
+        g.fillStyle = '#FFFF00';
+        g.beginPath();
+        g.moveTo(0, 0);
+        g.arc(0, 0, r, mouthOpen, Math.PI * 2 - mouthOpen);
+        g.closePath();
+        g.fill();
+        g.restore();
 
-    self._wrap=wrap; self._canvas=canvas; self._restart=restart;
+        // Bow (Ms. Pac-Man signature)
+        g.fillStyle = '#FF0066';
+        // left wing
+        g.beginPath();
+        g.moveTo(cx - r * 0.15, cy - r * 0.85);
+        g.lineTo(cx - r * 0.65, cy - r * 1.35);
+        g.lineTo(cx - r * 0.4, cy - r * 0.65);
+        g.closePath(); g.fill();
+        // right wing
+        g.beginPath();
+        g.moveTo(cx + r * 0.15, cy - r * 0.85);
+        g.lineTo(cx + r * 0.65, cy - r * 1.35);
+        g.lineTo(cx + r * 0.4, cy - r * 0.65);
+        g.closePath(); g.fill();
+        // center knot
+        g.fillStyle = '#FF0066';
+        g.beginPath(); g.arc(cx, cy - r * 0.8, r * 0.12, 0, Math.PI * 2); g.fill();
+      }
+
+      // Particles
+      particles.forEach(p => {
+        g.globalAlpha = Math.max(0, p.life / 0.5);
+        g.fillStyle = p.c; g.fillRect(p.x - 1, p.y - 1, 3, 3);
+      });
+      g.globalAlpha = 1;
+
+      // Scanlines
+      g.fillStyle = 'rgba(0,0,0,0.18)';
+      for (let y = 0; y < H; y += 3) g.fillRect(0, y, W, 1);
+
+      // HUD
+      g.fillStyle = '#FF66CC'; g.font = 'bold 16px "Courier New"';
+      g.textAlign = 'left'; g.fillText('SCORE ' + score, 12, 28);
+      g.textAlign = 'right'; g.fillText('LIVES ' + '♥'.repeat(Math.max(0, lives)), W - 12, 28);
+      g.textAlign = 'left';
+
+      // D-pad — 4 triangles from center
+      if (started && running) {
+        g.save();
+        g.textAlign = 'center'; g.textBaseline = 'middle';
+        const tl = { x: 0, y: DPAD_Y }, tr = { x: W, y: DPAD_Y };
+        const bl = { x: 0, y: H - SAFE }, br = { x: W, y: H - SAFE };
+        const cc = { x: PCX, y: PCY };
+        const triangles = [
+          { pts: [cc, tl, tr], dir: 2, label: '▲', lx: PCX,      ly: DPAD_Y + DPAD_H * 0.28 },
+          { pts: [cc, bl, br], dir: 3, label: '▼', lx: PCX,      ly: DPAD_Y + DPAD_H * 0.72 },
+          { pts: [cc, tl, bl], dir: 1, label: '◀', lx: W * 0.22, ly: PCY },
+          { pts: [cc, tr, br], dir: 0, label: '▶', lx: W * 0.78, ly: PCY },
+        ];
+        triangles.forEach(t => {
+          const lit = t.dir === dpadActive;
+          g.beginPath();
+          g.moveTo(t.pts[0].x, t.pts[0].y);
+          g.lineTo(t.pts[1].x, t.pts[1].y);
+          g.lineTo(t.pts[2].x, t.pts[2].y);
+          g.closePath();
+          g.fillStyle = lit ? 'rgba(255,100,200,0.25)' : 'rgba(255,100,200,0.07)';
+          g.fill();
+          g.strokeStyle = 'rgba(255,100,200,0.15)';
+          g.lineWidth = 1;
+          g.stroke();
+          g.fillStyle = lit ? '#FF66CC' : 'rgba(255,150,210,0.4)';
+          g.font = 'bold 26px sans-serif';
+          g.fillText(t.label, t.lx, t.ly);
+        });
+        g.restore();
+      }
+
+      if (!started) {
+        g.fillStyle = 'rgba(0,0,0,0.88)'; g.fillRect(0, 0, W, H);
+        g.fillStyle = '#FF66CC'; g.font = 'bold 26px "Courier New"'; g.textAlign = 'center';
+        g.fillText('MS. PAC-MAN', W / 2, H / 2 - 40);
+        g.fillStyle = '#FFF'; g.font = '15px "Courier New"';
+        g.fillText('TAP D-PAD to steer', W / 2, H / 2 + 5);
+        g.fillText('Eat all dots to win!', W / 2, H / 2 + 28);
+        g.fillText('Power pellets = eat ghosts', W / 2, H / 2 + 51);
+        g.fillStyle = '#FFFF00'; g.font = 'bold 16px "Courier New"';
+        g.fillText('TAP TO START', W / 2, H / 2 + 88);
+        g.textAlign = 'left';
+      }
+
+      if (!running && started) {
+        g.fillStyle = 'rgba(0,0,0,0.82)'; g.fillRect(0, 0, W, H);
+        g.fillStyle = win ? '#FFFF00' : '#FF2244';
+        g.font = 'bold 30px "Courier New"'; g.textAlign = 'center';
+        g.fillText(win ? 'YOU WIN!' : 'GAME OVER', W / 2, H / 2 - 20);
+        g.fillStyle = '#FFF'; g.font = '20px "Courier New"';
+        g.fillText('SCORE ' + score, W / 2, H / 2 + 18);
+        g.fillStyle = '#AAA'; g.font = '16px "Courier New"';
+        g.fillText('TAP TO RESTART', W / 2, H / 2 + 52);
+        g.textAlign = 'left';
+      }
+    });
+
+    ctx.platform.ready();
   },
-  destroy(){
-    cancelAnimationFrame(this._raf);
-    window.removeEventListener('resize', this._onResize);
-    window.removeEventListener('keydown', this._onKey);
-    if (this._canvas){
-      this._canvas.removeEventListener('touchstart', this._onTouchStart);
-      this._canvas.removeEventListener('touchmove', this._onTouchMove);
-    }
-    if (this._restart){
-      this._restart.removeEventListener('click', this._onRestart);
-      this._restart.removeEventListener('touchstart', this._onRestart);
-    }
-    if (this._wrap && this._wrap.parentNode) this._wrap.parentNode.removeChild(this._wrap);
-    this._wrap=this._canvas=this._restart=null;
-  },
+
+  pause() {},
+  resume() {},
 };

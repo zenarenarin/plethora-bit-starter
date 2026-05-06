@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plethora Bit Making"
+  short_description: "Create, fix, validate, upload, and publish Plethora bits."
+  default_prompt: "Use this skill to create, debug, validate, upload, or republish a Plethora bit."
